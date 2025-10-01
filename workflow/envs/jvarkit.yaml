@@ -1,0 +1,8 @@
+name: jvarkit_env
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - jvarkit=2024.08.25
+  - umi_tools=1.1.6

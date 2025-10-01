@@ -1,0 +1,42 @@
+R: "R_LIBS_USER=/home/jiayiwang/micromamba/envs/omnibenchmark/lib/R/library /home/jiayiwang/micromamba/envs/omnibenchmark/bin/R"
+
+# files
+lr_bam_dir: "/home/jiayiwang/loggedfs_david_penton/data/kinnex/"
+sr_fastq_dir: "/home/jiayiwang/loggedfs_david_penton/data/NovaSeq/fastq/"
+res_dir: "/home/jiayiwang/loggedfs_david_penton/result/"
+primers: "/home/jiayiwang/pacbio/data/primer/10x_3kit_primers.fasta"  
+genome: "/home/jiayiwang/pacbio/data/genome/GRCh38.p14.genome.fa"  
+annotation: "/home/jiayiwang/pacbio/data/genome/gencode.v47.chr_patch_hapl_scaff.annotation.sorted.gtf"
+transcriptome_bed: "/home/jiayiwang/pacbio/data/genome/gencode.v47.chr_patch_hapl_scaff.annotation.bed"
+cds_bed: "/home/jiayiwang/pacbio/data/genome/gencode.v47.chr_patch_hapl_scaff.cds.bed"
+rseqc_gene_model: "/home/jiayiwang/tools/RSeQC-5.0.1/gene_model/hg38_GENCODE_V46.bed"
+whitelist: "data/barcode/3M-3pgex-may-2023.REVCOMP.txt"
+
+# singualrity images
+clair3-rna: "/home/jiayiwang/tools/clair3-rna-latest.simg"
+deepvariant: "/home/jiayiwang/tools/deepvariant_1.9.0.sif"
+
+# Threads for preprocessing
+lima_threads: 8
+tag_threads: 8
+refine_threads: 8
+bc_corr_threads: 8
+sorting_threads: 8
+dedup_threads: 8
+
+# Threads for alignment
+align_map_bam_threads: 16
+align_sort_bam_threads: 16
+convert_threads: 4
+
+# Threads for quantification
+collating_threads: 4
+
+# Memory for sorting (in GB)
+sorting_memory: 8
+align_sort_bam_memory_gb: 16
+
+
+# Memory for sorting step (in gigabytes)
+sorting_memory: 16
+

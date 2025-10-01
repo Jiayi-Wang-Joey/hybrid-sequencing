@@ -1,0 +1,7 @@
+name: aligner
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - oarfish=0.7.0

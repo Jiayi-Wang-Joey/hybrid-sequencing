@@ -1,0 +1,9 @@
+name: aligner
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - samtools=1.21
+  - oarfish=0.7.0
+  - gffread=0.12.7

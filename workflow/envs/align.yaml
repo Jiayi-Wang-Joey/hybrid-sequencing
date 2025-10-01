@@ -1,0 +1,10 @@
+name: jvarkit_env
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - jvarkit=2024.08.25
+  - gffread=0.12.7
+  - samtools=1.21
+  - minimap2=2.28-0

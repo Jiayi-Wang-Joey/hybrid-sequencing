@@ -1,0 +1,157 @@
+---
+title: "Comparison of cell type annotation between SR and LR WTA scRNA-seq - clustering"
+format:
+  html:
+    self-contained: true
+    toc: true
+    code-fold: true
+    code-tools: true
+    toc_float: true
+    
+    
+author: Jiayi Wang
+---
+
+## Dependencies
+```{r dep}
+suppressPackageStartupMessages({
+    library(SingleCellExperiment)
+    library(scran)
+    library(scater)
+    library(igraph)
+    library(patchwork)
+    library(ggplot2)
+    library(vegan)
+    library(harmony)
+    library(scales)
+    library(RColorBrewer)
+    library(viridis)
+    library(dplyr)
+    library(data.table)
+    library(ggrastr)
+})
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/Volumes/jiayiwang/twist-comparison/")
+```
+
+## Data loading
+```{r}
+lr <- readRDS("data/counts/lr_sce_preprocessed_p4.rds")
+sr <- readRDS("data/counts/sr_sce_preprocessed_p4.rds")
+```
+
+### Cell-cell correlation
+```{r}
+cor_dt <- data.table(barcode = intersect(sr$barcode, lr$barcode))
+lr_colsum <- colSums(counts(lr))
+sr_colsum <- colSums(counts(sr))
+cor_dt$library_size <- log10(rowMeans(cbind(lr_colsum[cor_dt$barcode], 
+                             sr_colsum[cor_dt$barcode])))
+cor_dt$diff <- log10(abs(rowDiffs(cbind(lr_colsum[cor_dt$barcode],
+                             sr_colsum[cor_dt$barcode]))))
+
+gs <- union(rownames(sr), rownames(lr))
+#gs <- intersect(rownames(sr), rownames(lr))
+d <- data.table(gs = gs)
+rownames(d) <- gs
+colnames(sr) <- sr$barcode
+
+
+cor_dt$cor <- sapply(cor_dt$barcode, function(cb) {
+  # Extract raw counts
+  l <- logcounts(lr)[, cb]
+  s <- logcounts(sr)[, cb]
+  l <- l[gs]; s <- s[gs]
+  l[is.na(l)] <- 0
+  s[is.na(s)] <- 0
+  cor(l, s, method = "spearman")
+})
+
+
+gg <- ggplot(cor_dt, aes(library_size, cor, col = diff)) + 
+  geom_point_rast() +
+  theme_minimal() +
+  scale_color_viridis_c(option = "plasma", direction=1) +
+  labs(x="Average library size (log10)", y = "Spearman", col = "Abs.\ndifference\n(log10)") +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA)
+  )
+# 
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/cellCorr_library.pdf", gg,
+#        height = 3.5, width = 4.5)
+    
+```
+
+
+```{r}
+p <- cor_dt %>%
+  mutate(
+    cor_bin = cut(
+      cor,
+      breaks = seq(0, 1, by = 0.01),
+      labels = seq(0.005, 0.995, by = 0.01)
+    )
+  ) %>%
+  group_by(cor_bin) %>%
+  summarize(
+    n = n(),
+    avg_log = mean(library_size, na.rm=TRUE)
+  ) %>%
+  ggplot(aes(
+    x = as.numeric(as.character(cor_bin)),
+    y = n,
+    fill = avg_log
+  )) +
+  geom_col(width = 0.01) +
+  scale_x_continuous(limits = c(0.25, 1), name = "Spearman's Correlation") +
+  scale_fill_viridis(option = "C", direction = -1, name = "Mean \nlibrary size") + 
+  theme_bw() + ylab("count")
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/cellCorr_dist.pdf", p,
+#        height = 3, width = 4)
+
+```
+
+
+## Dimensionality reduction
+
+```{r warning=FALSE}
+.dr <- \(sce) {
+    tbl <- modelGeneVar(sce, block = sce$sample)
+    idx <- order(tbl$bio, decreasing=TRUE)[1:3000]
+    rowData(sce)$hvg <- FALSE
+    rowData(sce)$hvg[idx] <- TRUE
+    rowData(sce)$bio <- tbl$bio 
+    sce <- runPCA(sce, subset_row = idx, ncomponents = 20)
+    sce <- runTSNE(sce)
+    sce <- runUMAP(sce)
+}
+lr <- .dr(lr)
+sr <- .dr(sr)
+length(intersect(rownames(lr)[rowData(lr)$hvg], rownames(sr)[rowData(sr)$hvg]))
+```
+
+
+## Compare Similarity between low dimensionality spaces
+
+```{r}
+colnames(sr) <- sr$barcode
+gi <- intersect(rownames(lr), rownames(sr))
+ci <- intersect(colnames(lr), colnames(sr))
+lr <- lr[gi,ci]
+sr <- sr[gi,ci]
+set.seed(2024)
+lr <- .dr(lr)
+sr <- .dr(sr)
+pca_lr <- reducedDim(lr, "PCA")
+pca_sr <- reducedDim(sr, "PCA")
+D_lr <- dist(pca_lr) 
+D_sr <- dist(pca_sr)
+
+cor(as.vector(D_lr), as.vector(D_sr), method = "spearman")
+cor(as.vector(D_lr), as.vector(D_sr), method = "pearson")
+```
+
+

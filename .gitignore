@@ -16,7 +16,12 @@ SnpEff*
 *txt
 snpEff*
 .smbdeleteAAA265088c3
-docs/
+docs/._*
+docs/**/arch/
+docs/**/outs/
+docs/**/plts
+docs/**/._*
+docs/**/.R*
 workflow/envs/arch/
 workflow/rules/arch/
 workflow/scripts/arch/

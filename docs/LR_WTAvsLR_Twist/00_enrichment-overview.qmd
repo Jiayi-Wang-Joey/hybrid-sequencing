@@ -1,0 +1,384 @@
+---
+title: "Enrichment Overview for Twist Results"
+format:
+  html:
+    toc: true
+    self-contained: true
+    code-fold: true
+    code-tools: true
+    toc_float: true
+    
+opts_knit:
+    root.dir: "/home/jiayiwang"
+    
+author: Jiayi Wang
+---
+
+## Dependencies
+```{r packages}
+suppressPackageStartupMessages({
+    library(ggplot2)
+    library(data.table)
+    library(scater)
+    library(scuttle)
+    library(scran)
+    library(patchwork)
+    library(edgeR)
+    library(AnnotationDbi)
+    library("EnsDb.Hsapiens.v86")  
+    library(ggrepel)
+    library(ggrastr)
+    library(BiocParallel)
+    library(tidyr)
+    #library(forcats)
+})
+```
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/home/jiayiwang/twist-comparison/")
+```
+
+## Data loading
+```{r}
+samples <- c("sampleB_twist_all",
+             "sampleA_twist_all",
+             "sampleA_all",
+             "sampleB_all")
+
+sce_dir <- "/home//jiayiwang/loggedfs_david_penton/result/quantify/transcriptome/gene_sce/"
+sces <- lapply(samples, \(smp) {
+    sce <- readRDS(file.path(sce_dir, paste0(smp, ".rds")))
+    ensembl_ids <- rownames(sce)
+    ensembl_ids <- sub("\\..*$", "", ensembl_ids)
+    
+    gene_symbols <- mapIds(EnsDb.Hsapiens.v86,
+                           keys = ensembl_ids,
+                           column = "SYMBOL",
+                           keytype = "GENEID",
+                           multiVals = "first")
+    gene_symbols[is.na(gene_symbols)] <- ensembl_ids[is.na(gene_symbols)]
+    
+    rowData(sce) <- DataFrame(ENSEMBL = ensembl_ids, SYMBOL = gene_symbols)
+    rownames(sce) <- gene_symbols
+    rm(ensembl_ids)
+    rm(gene_symbols)
+    sce
+})
+names(sces) <- sapply(samples, \(s) ifelse(
+    grepl("twist", s),
+    sub("_.*", ".Twist", s),
+    paste0(s, ".WTA")))              
+```
+
+
+## The number of reads in data processing steps
+
+```{r, fig.width=6, fig.height=5}
+dt <- fread("data/read_count/lr.tsv")
+
+# Replace platform suffix
+dt[, tech:=ifelse(grepl("twist",Sample), "LR-Twist", "LR-WTA")]
+dt[, sample:=substr(Sample, 1, 7)]
+td <- fread("data/read_count/sr.tsv")
+td[,tech:="SR-WTA"]
+td[,sample:=Sample]
+
+td[,Type := factor(Type, levels = c("raw","mapped_genome","deduplicated","counts"))]
+dt[,Type := factor(Type, levels = c("raw","deduplicated","cell_calling",
+                                     "mapped_genome","mapped_transcriptome","counts"))]
+
+
+p1 <- ggplot(dt, aes(x = sample, y = Read_Count, fill = Type)) +
+    facet_grid(~tech) +
+    geom_bar(position = "dodge", stat = "identity") +
+    theme_bw() +
+    labs(#title = "Read counts at each data analysis step",
+         fill = "Step", 
+         x = "Dataset",
+         y = "Count") +
+    scale_y_continuous() +
+    scale_fill_brewer(palette = "Paired") 
+p2 <- ggplot(td, aes(x = sample, y = Read_Count, fill = Type)) +
+    facet_grid(~tech) +
+    geom_bar(position = "dodge", stat = "identity") +
+    theme_bw() +
+    labs(#title = "Read counts at each data analysis step",
+         fill = "Step", 
+         x = "Dataset",
+         y = "Count") +
+    scale_y_continuous() +
+    scale_fill_brewer(palette = "Paired") 
+p <- p1 / p2 +
+    plot_annotation(tag_levels = "a") &
+    theme(plot.tag = element_text(face = "bold"))
+
+# ggsave("/home/jiayiwang/twist-comparison/plts/nReads_step.pdf",
+#        p,  width=7, height=8)
+```
+
+
+## UMI count comparison
+
+### Summed UMI count on gene-level: On-target vs. off-target genes
+```{r, fig.height=10, fig.width=10, warning=FALSE}
+goi <-  c('ATP1A1', 'ATP2B3', 'CACNA1D', 'CACNA1H', 'KCNJ5',
+        'GNA11', 'MCOLN3', 'CLCN2', 'CTNNB1', 'CYP11B2', 'FRRS1L',
+        'CELA1', 'UBTD1', 'NCAM1', 'CAMTA2', 'TMEM67',
+        'KCNA4', 'KCNH3', 'KCNK5', 'PER1', 'WNK2', 'KCNMB3', 'INSR',
+        'PDE8A', 'PPP1R9A', 'USP3', 'NR0B2', 'AQP11', 'NFATC4', 'STAR',
+        'CYP11B1', 'KCNK3', 'SLC8A1', 'CALM1', 'CREB1', 'PRKACA', 'MTOR',
+        'GNAQ', 'SLC24A1', 'PEX1', 'VDR', 'TSC2', 'CDKN2B', 'MAP3K6', "UBE2Q2L",
+        'SLC30A1', 'NR5A1', 'HSD3B2', 'NR4A2', 'WNK1')
+
+dt <- rbindlist(lapply(names(sces), \(x) {
+    cnt <- counts(sces[[x]])  
+    data.table(
+        gene   = rownames(cnt),
+        count  = rowSums(cnt),
+        target = ifelse(rownames(cnt) %in% goi, "On-target", "Off-target"),
+        sample = substr(x,1,7),
+        tech   = strsplit(x, "\\.")[[1]][2]
+    )
+}))
+
+
+dt_wide <- dcast(
+  dt, gene + sample + target ~ tech, 
+  value.var = "count", 
+  fun.aggregate = sum  
+)
+
+dt_wide <- na.omit(dt_wide)
+dt_wide[sample == "normal4", sample := "sampleA"]
+dt_wide[sample == "tumor4",  sample := "sampleB"]
+target_colors <- c("Off-target" = "grey", "On-target" = "dodgerblue")
+p1 <- ggplot(dt_wide, aes(x = WTA, y = Twist, color = target)) +
+  geom_point_rast(size = 1.5, alpha=0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50")  +
+  facet_wrap(~sample) +
+  scale_color_manual(values = target_colors) +
+  scale_x_continuous(trans = pseudo_log_trans(base = 10)) +
+  scale_y_continuous(trans = pseudo_log_trans(base = 10)) +
+  coord_equal() +
+  labs(
+    x = "LR-WTA",
+    y = "LR-Twist",
+    color = "Target",
+    title = "Summed UMIs across all cells"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+# ggsave("/home/jiayiwang/twist-comparison/plts/allGenes_enrichment.pdf",
+#        p1,  width=8, height=4.5)
+
+td_wide <- dt_wide[target=="On-target"]
+p2 <- ggplot(td_wide, aes(x = WTA, y = Twist)) +
+  geom_point_rast(size = 1.5, color="dodgerblue", alpha=0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50")  +
+  facet_wrap(~sample) +
+  geom_text_repel(aes(label=gene),size = 3, max.overlaps = 15) + 
+  scale_color_manual(values = target_colors) +
+  scale_x_log10() +
+  scale_y_log10() +
+  coord_equal() +
+  labs(
+    x = "LR-WTA",
+    y = "LR-Twist",
+    title = "Targeted gene UMIs"
+  ) +
+  theme_bw() +
+  scale_x_log10() +
+  scale_y_log10()
+ 
+# ggsave("/home/jiayiwang/twist-comparison/plts/enrichment_targetGene.pdf",
+#        p2,  width=8, height=4.5)
+ 
+p <- (p1 / p2) +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    tag_levels = "a"
+  ) &
+  theme(
+    plot.tag = element_text(face = "bold", size = 15) 
+  )
+
+# ggsave("/home/jiayiwang/variants/docs/Twist/plts/enrichment_Gene.pdf",
+#         p,  width=8, height=8)
+```
+
+### summed UMI count on bulk level
+```{r}
+# td <- rbindlist(lapply(names(sces), \(x) {
+#     sce <- sces[[x]]
+#     dt1 <- data.table(target = "On-target")
+# }))
+dt[,totalCount := sum(count), by = .(sample, target, tech)]
+dt[,tech:=paste0("LR-", tech)]
+dt[sample == "normal4", sample := "sampleA"]
+dt[sample == "tumor4",  sample := "sampleB"]
+td <- unique(dt[,.(sample, tech, target, totalCount)])
+p1 <- ggplot(td, aes(x = target, y = totalCount, fill = tech)) + 
+  geom_bar(stat = "identity", 
+           position = position_dodge(width = 0.7), width = 0.7) + 
+  facet_grid(~sample) +
+  theme_bw() +
+  labs(x = NULL,
+       fill = "Data",
+       title = "Number of On- and Off-target UMIs",
+       y = "Read Count") +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_log10()
+
+td[, proportion := totalCount / sum(totalCount), by = .(sample, tech)]
+td[, target := factor(target, levels = c("On-target", "Off-target"))]
+p2 <- ggplot(td, aes(x = tech, y = proportion, fill = target)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = round(totalCount)),
+            position = position_stack(vjust = 0.5),
+            color = "black", size = 3) +
+  facet_wrap(~sample) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(
+    x = NULL,
+    y = "Proportion of reads",
+    fill = "Target",
+    title = "Proportion of On- and Off-target UMIs"
+  ) +
+  theme_bw()
+p <- (p1 | p2) + plot_annotation(
+    tag_levels = "a"
+  ) &
+  theme(
+    plot.tag = element_text(face = "bold", size = 15) 
+  )
+
+#saveRDS(dt, "/home/jiayiwang/twist-comparison/data/results/lr_bulkcounts.rds")
+# ggsave("/home/jiayiwang/twist-comparison/plts/enrichment_sample.pdf",
+#        p2,  width=6, height=4.5)
+```
+
+
+
+
+## Cell-level comparison
+
+### Distribution of cell count 
+
+```{r}
+targetDt <- rbindlist(
+  lapply(names(sces), function(x) {
+    sce <- sces[[x]]
+    counts <- assay(sce, "counts")[goi,]
+
+    dt <- as.data.table(as.matrix(counts(sce)), keep.rownames = "gene_id")
+    dt <- melt(dt, id.vars = "gene_id", 
+               variable.name = "cell", 
+               value.name = "count")
+    
+
+    dt <- dt[gene_id %in% goi]
+
+    dt[, gene := gene_id]
+    dt[, sample := strsplit(x, "\\.")[[1]][1]]
+    dt[, tech := strsplit(x, "\\.")[[1]][2]]
+    dt[, .(cell, gene, count, sample, tech)]
+  }), 
+)
+targetDt_wide <- targetDt %>%
+  pivot_wider(names_from = tech, values_from = count) %>%
+  drop_na(WTA, Twist)
+setDT(targetDt_wide)
+targetDt_wide[sample=="normal4", sample:="sampleA"]
+targetDt_wide[sample=="tumor4", sample:="sampleB"]
+p <- ggplot(targetDt_wide, aes(x = WTA, y = Twist, color = gene)) +
+  geom_point_rast(alpha = 0.6, size = 0.7) +
+  facet_grid(~sample, scales = "free") +  
+  theme_bw() +
+  theme(legend.position = "none") + 
+  labs(x = "LR-WTA", y = "LR-Twist") +
+ scale_x_log10() +
+ scale_y_log10() +
+ scale_color_viridis_d(option = "F") +
+ geom_abline(slope = 1, intercept = 0, 
+             linetype = "dashed", color = "grey40") 
+# 
+# ggsave("/home/jiayiwang/twist-comparison/plts//enrichment_cell-gene.pdf",
+#         p,  width=5.5, height=3)
+```
+
+
+## Number of reads in targeted genes colored by cell types
+```{r, fig.width=10}
+sce <- readRDS("/home/jiayiwang/twist-comparison/data/counts/sr_annotated_p4.rds")
+ct <- unique(sce$cell_type)
+cd <- colData(sce)
+cellDt <- lapply(sces, \(x) {
+    d <- lapply(ct, \(c) {
+        cb <- cd[cd$cell_type %in% c, "barcode"]
+        data.frame(
+            gene=rownames(x),
+            counts=rowSums(counts(x)[,colnames(x) %in% cb]))
+    })
+    names(d) <- ct
+    rbindlist(d,idcol="cell_type")
+})
+cellDt <- rbindlist(cellDt, idcol="sample")
+cellDt[, target:=ifelse(gene %in% goi, TRUE, FALSE)]
+cellDt[, c("sample_id", "Data") := tstrsplit(sample, "\\.")]
+targetDt <- cellDt[target==TRUE]
+```
+
+### Percentage of reads in targeted reads color by cells
+```{r, fig.width=10}
+cellDt[,totalReads:=sum(counts), by=.(sample, cell_type)]
+cellDt[,nReads:=sum(counts), by=.(sample, cell_type, target)]
+cellDt[,prop:=nReads/totalReads]
+dt <- unique(cellDt[,.(sample, prop, target, totalReads, cell_type)])
+dt <- na.omit(dt)
+dt_target <- dt[target == TRUE]
+
+# ---- NORMAL PLOT ----
+normal_dt <- dt_target[sample %in% c("sampleA_all.WTA", "sampleA.Twist")]
+normal_wide <- dcast(normal_dt, cell_type ~ sample, value.var = "prop")
+
+p1 <- ggplot(normal_wide, aes(x = sampleA_all.WTA, 
+                              y = sampleA.Twist, color = cell_type)) +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Paired") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray40") +
+  labs(
+    title = "sampleA",
+    x = "LR-WTA", y = "LR-Twist", color = "Cell Type"
+  ) + 
+  theme_bw() +
+  xlim(c(0,1)) +
+  ylim(c(0,1)) +
+  coord_fixed()
+
+# ---- TUMOR PLOT ----
+tumor_dt <- dt_target[sample %in% c("sampleB_all.WTA", "sampleB.Twist")]
+tumor_wide <- dcast(tumor_dt, cell_type ~ sample, value.var = "prop")
+
+p2 <- ggplot(tumor_wide, aes(x = sampleB_all.WTA, 
+                             y = sampleB.Twist, color = cell_type)) +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Paired") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray40") +
+  labs(
+    title = "sampleB",
+    x = "LR-WTA", y = "LR-Twist", color = "Cell Type"
+  ) + 
+  theme_bw() +
+  xlim(c(0,1)) +
+  ylim(c(0,1)) +
+  coord_fixed()
+p <- p1 + p2 + plot_layout(guides = "collect")
+# ggsave("/home/jiayiwang/twist-comparison/plts/enrichment_cellType1.pdf",
+#        p,  width=8, height=4.5)
+
+```
+
+
+

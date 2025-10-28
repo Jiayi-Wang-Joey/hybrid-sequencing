@@ -1,0 +1,75 @@
+---
+title: "Using LR-Twist for cell typing"
+format:
+  html:
+    self-contained: true
+    toc: true
+    code-fold: true
+    code-tools: true
+    toc_float: true
+
+    
+author: Jiayi Wang
+---
+
+## Dependencies
+```{r dep, warning=FALSE}
+suppressPackageStartupMessages({
+    library(SingleCellExperiment)
+    library(ggplot2)
+    library(scater)
+    library(scran)
+    library(scuttle)
+    library(mclust)
+    library(patchwork)
+    library(data.table)
+})
+```
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/Volumes/jiayiwang/twist-comparison/")
+```
+
+
+## Data loading
+```{r}
+wta <- readRDS("data/counts/lr_annotated_p4.rds")
+twist <- readRDS("data/counts/twist_sce_p4.rds")
+twist <- logNormCounts(twist)
+```
+
+## UMAP with cell types
+```{r}
+.dr <- \(sce) {
+    tbl <- modelGeneVar(sce, block = sce$sample)
+    idx <- order(tbl$bio, decreasing=TRUE)[1:3000]
+    rowData(sce)$hvg <- FALSE
+    rowData(sce)$hvg[idx] <- TRUE
+    rowData(sce)$bio <- tbl$bio 
+    sce <- runPCA(sce, subset_row = idx, ncomponents = 20)
+    sce <- runTSNE(sce)
+    sce <- runUMAP(sce)
+}
+twist <- .dr(twist)
+ct <- fread("data/markers/twist_celltypist/predicted_labels.csv")
+twist <- twist[,ct$V1]
+twist$cell_type <- ct$predicted_labels
+p1 <- plotUMAP(twist, color_by = "cell_type") 
+```
+
+## Comparison with LR-WTA 
+```{r}
+twist <- twist[,colnames(wta)]
+twist <- .dr(twist)
+ari <- adjustedRandIndex(twist$cell_type, wta$cell_type)
+p <- p1 + ggtitle("LR-Twist called cells", ) +
+plotUMAP(twist, color_by = "cell_type") + 
+    ggtitle("Shared cells between LR-WTA and LR-Twist", 
+            subtitle = sprintf("Concordance: ARI = %.2f", ari)) +
+    plot_annotation(
+    tag_levels = "A"
+  ) + plot_layout(guides = "collect")
+ggsave("/Volumes/jiayiwang/twist-comparison/plts/umaps_twist.pdf", p, 
+       height = 4, width = 10)
+```
+

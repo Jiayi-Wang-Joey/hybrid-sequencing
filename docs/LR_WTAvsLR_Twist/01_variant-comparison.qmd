@@ -1,0 +1,416 @@
+---
+title: "Enrichment Overview for Twist Results"
+format:
+  html:
+    toc: true
+    code-fold: true
+    code-tools: true
+    toc_float: true
+    
+opts_knit:
+    root.dir: "/home/jiayiwang"
+    
+author: Jiayi Wang
+---
+
+## Dependencies
+```{r packages}
+suppressPackageStartupMessages({
+    library(VariantAnnotation)
+    library(ggplot2)
+    library(data.table)
+    library(scater)
+    library(scuttle)
+    library(scran)
+    library(patchwork)
+    library(edgeR)
+    library(AnnotationDbi)
+    library("EnsDb.Hsapiens.v86")  
+    library(ggrepel)
+    library(ggrastr)
+    library(BiocParallel)
+    library(ggVennDiagram)
+    library(UpSetR)
+    library(RColorBrewer)
+    source("/Volumes/jiayiwang/twist-comparison/workflow/scripts/findMutation.R")
+})
+```
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/Volumes/jiayiwang/twist-comparison/")
+```
+
+## Data loading
+
+### SCEs
+```{r warning=FALSE}
+sce_dir <- "/Volumes/jiayiwang/loggedfs_david_penton/result/quantify/transcriptome/gene_sce/"
+samples <- c("sampleB_all", "sampleB_twist_all",
+             "sampleA_all", "sampleA_twist_all")
+sces <- lapply(samples, \(smp) {
+    sce <- readRDS(file.path(sce_dir, paste0(smp, ".rds")))
+    ensembl_ids <- rownames(sce)
+    ensembl_ids <- sub("\\..*$", "", ensembl_ids)
+    
+    gene_symbols <- mapIds(EnsDb.Hsapiens.v86,
+                           keys = ensembl_ids,
+                           column = "SYMBOL",
+                           keytype = "GENEID",
+                           multiVals = "first")
+    gene_symbols[is.na(gene_symbols)] <- ensembl_ids[is.na(gene_symbols)]
+    
+    rowData(sce) <- DataFrame(ENSEMBL = ensembl_ids, SYMBOL = gene_symbols)
+    rownames(sce) <- gene_symbols
+    rm(ensembl_ids)
+    rm(gene_symbols)
+    sce
+})
+names(sces) <- sapply(samples, \(s) ifelse(
+    grepl("twist", s),
+    sub("_.*", ".LR_Twist", s),
+    paste0(s, ".LR_WTA")))  
+```
+
+
+### Vcf files
+```{r warning=FALSE}
+samples <- c("sampleB_all", "sampleB_twist_all",
+             "sampleA_all", "sampleA_twist_all")
+fs <- paste0("/Volumes/jiayiwang/loggedfs_david_penton/result/variants/merged/",
+             samples, ".pileup.vcf.gz")
+goi <- c('ATP1A1', 'ATP2B3', 'CACNA1D', 'CACNA1H', 'KCNJ5', 
+        'GNA11', 'MCOLN3', 'CLCN2', 'CTNNB1', 'CYP11B2', 'FRRS1L', 
+        'CELA1', 'UBE2Q2L', 'UBTD1', 'NCAM1', 'CAMTA2', 'TMEM67', 
+        'KCNA4', 'KCNH3', 'KCNK5', 'PER1', 'WNK2', 'KCNMB3', 'INSR', 
+        'PDE8A', 'PPP1R9A', 'USP3', 'NR0B2', 'AQP11', 'NFATC4', 'STAR', 
+        'CYP11B1', 'KCNK3', 'SLC8A1', 'CALM1', 'CREB1', 'PRKACA', 'MTOR', 
+        'GNAQ', 'SLC24A1', 'PEX1', 'VDR', 'TSC2', 'CDKN2B', 'MAP3K6', 
+        'SLC30A1', 'NR5A1', 'HSD3B2', 'NR4A2', 'WNK1', 'MCLON3')
+
+
+vcfs <- lapply(fs, readVcf)
+
+
+names(vcfs) <- sub("\\.pileup\\.vcf\\.gz$", "", basename(fs))
+dt <- rbindlist(lapply(vcfs, \(vcf) {
+    dt <- as.data.table(rowRanges(vcf))[, .(seqnames, start, end, ALT, REF)]
+    ann_list <- info(vcf)$ANN
+    dt$gene <- sapply(ann_list, function(x) strsplit(x[[1]], "\\|")[[1]][4])  
+    dt$effect <- sapply(ann_list, function(x) strsplit(x[[1]], "\\|")[[1]][2])   
+    dt$cDNA <- sapply(ann_list, function(x) {
+        ann_entry <- strsplit(x[[1]], "\\|")[[1]]
+        if (length(ann_entry) >= 10) ann_entry[10] else NA_character_
+    })
+    
+    dt$protein <- sapply(ann_list, function(x) {
+        ann_entry <- strsplit(x[[1]], "\\|")[[1]]
+        if (length(ann_entry) >= 11) ann_entry[11] else NA_character_
+    })
+    
+    for (x in names(geno(vcf))) dt[,x] <- geno(vcf)[[x]][,1]
+    
+    return(dt)
+}), idcol = "sample")
+dt[, ALT := sapply(ALT, \(x) as.character(x[1]))]
+dt[,mutation:=paste0(gene,":", seqnames,":",start,"_",
+                     as.character(REF),">",as.character(ALT), 
+                     "(", effect, ")")]
+dt[,old_sample := sample]
+dt <- dt[gene %in% goi]
+dt[, sample := sapply(sample, \(s) 
+  ifelse(grepl("twist", s, ignore.case = TRUE),
+         sub("_.*", ".LR_Twist", s),
+         sub("_.*", ".LR_WTA", s)))]
+dt <- dt[,effect!="intron_variant"]
+```
+
+
+## The number of variants
+
+### On sample level
+```{r}
+dt[,nMut:=uniqueN(mutation), by = .(sample)]
+td <- unique(dt[,.(sample, nMut)])
+
+
+gg <- ggplot(td, aes(reorder(sample, nMut), nMut, fill=sample)) + 
+    geom_bar(stat = "identity") +
+    scale_fill_brewer(palette = "Paired") +
+    labs(x="sample", y="Count") +
+    ggtitle("Number of Candidate Variants in Targeted Genes") +
+    theme_bw() 
+#     theme(legend.position = "none")
+# ggsave("/Volumes/jiayiwang/variants/docs/Twist/plts/variants_sample.pdf",
+#         gg,  width=6, height=5)
+```
+
+```{r}
+mutation_matrix <- data.table::dcast(dt, mutation ~ sample, 
+                                     value.var = "sample", 
+                                     fun.aggregate = length, fill = 0)
+
+pdf("/Volumes/jiayiwang/twist-comparison/plts/variants_upset.pdf",
+    width = 5, height = 4)
+upset(mutation_matrix,
+      #sets = names(mutation_matrix)[-1],
+      order.by = "freq",
+      empty.intersections = "on")
+dev.off()
+
+```
+
+
+### On each targeted gene
+```{r}
+dt[, dataset := ifelse(grepl("twist", sample), "Twist", "Whole-Transcriptome")]
+dt[,nMut_per_gene:=length(unique(mutation)), by = .(sample, gene)]
+td <- unique(dt[,.(sample,gene,nMut_per_gene)])
+
+#rs <- lapply(sces, \(.) rowSums(counts(.)))
+rs <- readRDS("data/library_size/rowSums.rds")
+# build counts table only for those genes
+cdt <- rbindlist(lapply(names(rs), function(s) {
+  ct <- rs[[s]]
+  # subset only mutated genes
+  ct <- ct[intersect(names(ct), goi)]
+  data.table(sample = s,
+             gene = names(ct),
+             counts = unname(ct))
+}))
+td <- merge(cdt, td, by = c("sample", "gene"), all.x = TRUE)
+```
+
+## nVariants as a function of gene expression
+```{r}
+axis_range <- range(c(0,14))
+
+.scatter <- \(rs, x_col, y_col, title, axis_limits = NULL, scale = NULL) {
+  dt <- data.table::dcast(td[sample %in% c(x_col, y_col)], 
+                 gene ~ sample, value.var = "nMut_per_gene", 
+                 fun.aggregate = sum)
+  x <- rs
+  g <- unique(dt$gene)
+  ids <- match(g, names(x))
+  dt$expression <- log10(x[ids]+1L)
+  dt[is.na(dt)] <- 0
+  dt <- dt[!(get(x_col) == 0 & get(y_col) == 0)]
+  
+  p <- ggplot(dt, aes_string(x = x_col, y = y_col, label="gene", col="expression")) +
+      geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "darkred", alpha=0.8) +
+      geom_point(size = 2) +
+      geom_text_repel(size = 2, max.overlaps = 20, col="black") +
+      theme_bw() +
+      labs(title = title, x = "LR-WTA", y = "LR-Twist") +
+      scale_x_continuous(limits = axis_limits, breaks = scales::pretty_breaks()) +
+      scale_y_continuous(limits = axis_limits, breaks = scales::pretty_breaks()) +
+      theme(
+        aspect.ratio = 1,
+        plot.margin = margin(),
+        panel.border = element_rect(fill = NA)
+      )
+  if (!is.null(scale)) p <- p + scale
+  p
+}
+
+expr_all <- c(
+  log10(rs$sampleA.LR_WTA[goi] + 1L),
+  log10(rs$sampleB.LR_WTA[goi] + 1L)
+)
+
+# range for shared legend
+expr_limits <- range(expr_all, na.rm = TRUE)
+shared_scale <- scale_color_viridis_c(
+  option = "A",
+  name   = "Expression",
+  limits = expr_limits
+)
+p1 <- .scatter(rs$sampleA.LR_WTA, "sampleA.LR_WTA", "sampleA.LR_Twist",
+               "sampleA", axis_limits = axis_range, scale = shared_scale)
+
+p2 <- .scatter(rs$sampleB.LR_WTA, "sampleB.LR_WTA", "sampleB.LR_Twist",
+               "sampleB", axis_limits = axis_range, scale = shared_scale)
+combined <- (p1 + p2) + plot_layout(guides = "collect") & theme(legend.position = "right")
+
+ggsave("/Volumes/jiayiwang/twist-comparison/plts//variants_gene.pdf",
+        p1 + p2 + plot_layout(guides = "collect"),  width=8, height=4)
+
+```
+
+## Read depth of each variant
+```{r}
+.scatter_dp <- \(td, x_col, y_col, title) {
+    td[,tech:=strsplit(sample, "\\.")[[1]][2]]
+    dd <- data.table::dcast(td[sample %in% c(x_col, y_col)], 
+                   gene + mutation + tech ~ sample, 
+                   value.var = c("DP", "AF"))
+    
+    dd[is.na(dd)] <- 0
+    
+    ggplot(dd, aes_string(x = x_col, y = y_col)) +
+        geom_point_rast(alpha = 0.6, size = 2) +
+        geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "darkred") +
+        theme_bw() +
+        scale_y_log10() +
+        scale_x_log10() +
+        scale_color_brewer(palette = "Set1") +
+        labs(title = title, x = "WTA", y = "Twist", color = "Category") 
+}
+dt[, AF := sapply(AD, function(x) x[2] / sum(x))]
+td <- unique(dt[,.(sample,gene,mutation, DP, AF, effect)])
+td[, tech := sub(".*\\.", "", sample)]
+td[, sample_id := sub("\\..*$", "", sample)] 
+dd <- data.table::dcast(td,
+                   gene + mutation + sample_id + effect ~ tech, 
+                   value.var = c("DP"))
+dd[, mutation_simple := sub("\\(.*\\)", "", mutation)]
+dd[is.na(dd)] <- 0 
+n <- length(unique(dd$effect))
+gg <- ggplot(dd, aes(x=LR_WTA+1, y=LR_Twist+1, col=effect)) + 
+    geom_point(size=2, alpha=0.8) +
+    facet_grid(~sample_id) +
+    scale_color_manual(values=brewer.pal(n, "Paired")) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey") +
+    theme_minimal() +
+    scale_y_log10() +
+    scale_x_log10() +
+    labs(x="LR-WTA", y="LR-Twist") +
+    theme(
+        aspect.ratio=1,
+        legend.position="bottom",
+        plot.margin=margin(),
+        legend.justification=c(0.5, 1),
+        legend.box.spacing=unit(0, "pt"),
+        panel.border=element_rect(fill=NA),
+        legend.key.size=unit(0.25, "lines")) +
+    guides(color = guide_legend(ncol = 3)) +
+    coord_equal() +
+    scale_x_continuous(trans = pseudo_log_trans(base = 10)) +
+    scale_y_continuous(trans = pseudo_log_trans(base = 10))
+
+
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/variants_dp.pdf",
+#         gg,  width=8, height=6)
+```
+
+
+## Cell Genotyping
+
+### Number of cells genotyped for each variant
+```{r}
+sce <- readRDS("/Volumes/jiayiwang/twist-comparison/data/counts/sr_annotated_p4.rds")
+sce$sample <- ifelse(sce$sample=="normal4", "sampleA", "sampleB")
+.f <- \(dt, sample_id) {
+    bamFile <- paste0("/Volumes/jiayiwang/loggedfs_david_penton/result/align/genome/removed_cell/",
+                      sample_id,".aligned.tagged.bam")
+    bamIndex <- paste0(bamFile, ".bai")
+    td <- dt[old_sample==sample_id]
+    td[,start:=as.numeric(start)]
+    td[,end:=as.numeric(end)]
+    res <- td[, {
+        findMutationCell(bamFile,
+                         bamIndex,
+                         start = start,
+                         end = end,
+                         chr = seqnames,
+                         reference = REF,
+                         alternative = ALT,
+                         annotate = TRUE,
+                         cellBarcode = sce$barcode,
+                         cellType = sce$cell_type)
+    }, by = mutation][,sample:=sample_id]
+    res
+}
+cellVaf <- lapply(samples, \(s) .f(dt, sample_id=s))
+cellVaf <- rbindlist(cellVaf)
+cellVaf <- merge(cellVaf, unique(td[, .(effect, mutation)]), 
+                 by = "mutation", all.x=TRUE)
+cellVaf[,DP:=sum(read_depth), by=.(mutation,sample)]
+cellVaf[,mutCells:=sum(VAF>0),by=.(mutation,sample)]
+cellVaf[,nCells:=uniqueN(CB),by=.(mutation,sample)]
+```
+
+
+
+
+### Proportion of adrenocortical cells can be genotyped
+```{r}
+cellVaf[,effect:=factor(effect)]
+adrenoVaf <- cellVaf[cellType=="Steroidogenic cells"]
+adrenoVaf$TotalCells <- 0
+#twist_barcode <- c(colnames(sces$sampleB.LR_Twist), colnames(sces$sampleA.LR_Twist))
+#sce <- sce[,sce$barcode %in% twist_barcode]
+adrenoVaf[grepl("sampleA",sample),"TotalCells"] <-
+    table(sce$sample, sce$cell_type)["sampleA","Steroidogenic cells"]
+adrenoVaf[grepl("sampleB",sample),"TotalCells"] <-
+    table(sce$sample, sce$cell_type)["sampleB","Steroidogenic cells"]
+adrenoVaf[,nGenoCells:=uniqueN(CB),by=.(sample,mutation)]
+adrenoVaf[,propCell:=nGenoCells/TotalCells]
+
+
+adrenoVaf[, tech := fifelse(grepl("twist", sample), "Twist", "WTA")]
+adrenoVaf[, sample_id := sub("_.*$", "", sample)]
+adrenoVaf <- unique(adrenoVaf[,.(mutation, sample_id, tech, effect, DP, nGenoCells, propCell)])
+prop_dt <- dcast(
+  adrenoVaf, 
+  mutation + sample_id + effect ~ tech, 
+  value.var = "propCell"
+)
+prop_dt[is.na(prop_dt)] <- 0
+effects <- levels(cellVaf$effect)
+effect_colors <- setNames(brewer.pal(n = length(effects), name = "Paired"), effects)
+prop_dt[, effectColor := effect_colors[effect]]
+prop_dt[, mutation_simple := sub("\\(.*\\)", "", mutation)]
+gg <- ggplot(prop_dt, aes(x=WTA, y=Twist, col=effectColor)) + 
+    geom_point(size=2, alpha=0.8) +
+    facet_grid(~sample_id) +
+    scale_color_identity(name = "Effect", guide = "none") +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey") +
+    theme_minimal() +
+    labs(x="LR-WTA", y="LR-Twist") +
+    theme(
+        aspect.ratio=1,
+        legend.position="bottom",
+        plot.margin=margin(),
+        legend.justification=c(0.5, 1),
+        legend.box.spacing=unit(0, "pt"),
+        panel.border=element_rect(fill=NA),
+        legend.key.size=unit(0.25, "lines")) +
+    guides(color = guide_legend(ncol = 3)) +
+    coord_equal() + 
+    scale_x_continuous(trans = pseudo_log_trans(base = 10)) +
+    scale_y_continuous(trans = pseudo_log_trans(base = 10))
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/variants_propAdreno.pdf",
+#         gg,  width=8, height=6)
+```
+
+###  Expression/DP vs Prop Adrenocells can be genotyped
+```{r}
+adrenoVaf[,tech:=paste0("LR-",tech)]
+adrenoVaf[,tech:=factor(tech, levels=c("LR-WTA", "LR-Twist"))]
+adrenoVaf[, mutation_simple := sub("\\(.*\\)", "", mutation)]
+gg <- ggplot(adrenoVaf, aes(DP, nGenoCells, color=sample_id)) + 
+    geom_point(size=1) +
+    scale_x_log10() +
+    scale_y_log10() +
+    facet_grid(~tech) +
+    scale_color_manual(values = c("steelblue", "tomato")) +  # two distinct colors
+    labs(color = "Sample", x = "Read depth (log10)", y = "Proportion") +  # change legend title
+    theme_minimal(6) +
+    theme(
+        aspect.ratio = 1,
+        plot.margin = margin(),
+        legend.justification = c(0.5, 1),
+        legend.box.spacing = unit(0, "pt"),
+        panel.border = element_rect(fill = NA),
+        legend.key.size = unit(0.5, "lines")
+    ) +
+    coord_equal() + 
+    scale_x_continuous(trans = pseudo_log_trans(base = 10)) +
+    scale_y_continuous(trans = pseudo_log_trans(base = 10))
+
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/DP_propAdreno.pdf",
+#         gg,  width=8, height=4.5)
+```
+
+
+

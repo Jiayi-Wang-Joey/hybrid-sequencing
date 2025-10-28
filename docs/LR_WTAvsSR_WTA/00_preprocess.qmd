@@ -1,0 +1,466 @@
+---
+title: "Comparison of cell type annotation between SR and LR WTA scRNA-seq - preprocess"
+format:
+  html:
+    self-contained: true
+    toc: true
+    code-fold: true
+    code-tools: true
+    toc_float: true
+
+    
+author: Jiayi Wang
+---
+
+## Dependencies
+```{r dep, warning=FALSE}
+suppressPackageStartupMessages({
+    library(SingleCellExperiment)
+    library(DropletUtils)
+    library(ggvenn)
+    library(AnnotationDbi)
+    library("EnsDb.Hsapiens.v86")  
+    library(ggplot2)
+    library(scater)
+    library(Biostrings)
+    library(ggrastr)
+    library(scDblFinder)
+    library(edgeR)
+    library(ggpubr)
+    library(BiocParallel)
+    library(patchwork)
+    library(data.table)
+    library(viridis) 
+    library(dplyr)
+    library(EDASeq)
+})
+```
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/home/jiayiwang/twist-comparison/")
+```
+
+
+## Library size comparison
+```{r}
+.p <- \(s) {
+    p1 <- "/Volumes/jiayiwang/loggedfs_david_penton/result/quantify/transcriptome/gene_sce/"
+    p2 <- "/Volumes/jiayiwang//loggedfs_david_penton/result/cellranger/"
+    sr <- read10xCounts(paste0(p2, s, "/outs/filtered_feature_bc_matrix"))
+    barcode <- as.character(
+        reverseComplement(DNAStringSet(sub("-1$", "", sr$Barcode))))
+    sr <- colSums(counts(sr))
+    names(sr) <- barcode
+    lr <- readRDS(paste0("/Volumes/jiayiwang/loggedfs_david_penton/result/quantify/transcriptome/gene_sce/",
+                         s, "_all.rds"))
+    lr <- colSums(counts(lr))
+    lr_wta <- readRDS(paste0("/Volumes/jiayiwang/loggedfs_david_penton/result/quantify/transcriptome/gene_sce/",
+                         s, ".rds"))
+    lr_wta <- colnames(lr_wta)
+    
+    id <- match(names(lr), names(sr))
+    sr <- sr[id]
+    dt <- data.frame(lr=lr, 
+                     sr=sr, 
+                     barcode = names(lr))
+    dt$in_lr_wta <- dt$barcode %in% lr_wta
+    ggplot(dt, aes(lr, sr)) + 
+      geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+      geom_point_rast(alpha = 0.7, size = 1.5, aes(color = in_lr_wta)) +
+      theme_minimal() +
+      coord_equal() +
+      scale_x_log10() +
+      scale_y_log10() +
+      scale_color_manual(
+        values = c("TRUE" = "#377EB8", "FALSE" = "#C6DBEF"),
+        name = "In LR-WTA"
+      ) +
+        labs(x="LR-WTA", y = "SR-WTA") +
+      guides(color = guide_legend(override.aes = list(size = 3))) +
+      theme(
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+        legend.position = "right",
+        legend.title = element_text(face = "bold"),
+        legend.text  = element_text(size = 10)
+      ) +
+      stat_cor(method = "spearman", label.y.npc = 0.95, label.x.npc = 0.05, 
+           aes(label = paste0("R = ", ..r..))) +
+      ggtitle(s)
+}
+p1 <- .p("sampleA")
+p2 <- .p("sampleB")
+p <- p1 + p2 + plot_layout(guides = "collect")
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/library_size.pdf", 
+#        p, height = 4, width = 8)    
+```
+
+## Data loading
+```{r load, message=FALSE}
+# LR
+samples <- c("sampleA", "sampleB")
+path <- "/Volumes/jiayiwang/loggedfs_david_penton/result/quantify/transcriptome/gene_sce/"
+sces <- lapply(samples, \(s) {
+    x <- readRDS(paste0(path, s, ".rds"))
+    x$sample <- s
+    x
+    })
+sces <- lapply(sces, \(.) {rowData(.) <- NULL; .})
+lr <- do.call(cbind, sces)
+lr$sample 
+# SR
+path <- "/Volumes/jiayiwang//loggedfs_david_penton/result/cellranger/"
+sces <- lapply(samples, \(s) {
+    print(s)
+    x <- read10xCounts(paste0(path, s, "/outs/filtered_feature_bc_matrix"))
+    x$sample <- s
+    x })
+sr <-  do.call(cbind, sces)
+rm(sces)
+dim(lr)
+dim(sr)
+```
+
+
+## Preprocess data
+
+Data cleaning: remove cells without detected genes and genes that are not expressed in any cells.
+```{r pre, message=FALSE, warning=FALSE}
+.pre <- \(sce) {
+    ensembl_ids <- rownames(sce)
+    ensembl_ids <- sub("\\..*$", "", ensembl_ids)
+
+    gene_symbols <- mapIds(EnsDb.Hsapiens.v86,
+                           keys = ensembl_ids,
+                           column = "SYMBOL",
+                           keytype = "GENEID",
+                           multiVals = "first")
+    gene_symbols[is.na(gene_symbols)] <- ensembl_ids[is.na(gene_symbols)]
+
+    rowData(sce) <- DataFrame(ENSEMBL = ensembl_ids,
+                              SYMBOL = gene_symbols)
+    rownames(sce) <- gene_symbols
+    rm(ensembl_ids)
+    rm(gene_symbols)
+    sce <- sce[rowSums(counts(sce)) > 0,]
+    sce <- sce[,colSums(counts(sce)) > 0]
+    sce
+}
+lr <- .pre(lr)
+sr <- .pre(sr)
+sr$barcode <- as.character(
+        reverseComplement(DNAStringSet(sub("-1$", "", sr$Barcode))))
+lr$barcode <- colnames(lr)
+
+
+dim(lr)
+dim(sr)
+
+# saveRDS(lr, "/home/jiayiwang/twist-comparison/data/counts/lr_all.rds")
+# saveRDS(sr, "/home/jiayiwang/twist-comparison/data/counts/sr_all.rds")
+# lr <- readRDS("/home/jiayiwang/twist-comparison/data/counts/lr_all.rds")
+# sr <- readRDS("/home/jiayiwang/twist-comparison/data/counts/sr_all.rds")
+```
+
+
+### Cell barcode overlap
+```{r}
+dt1 <- colData(lr)[,c("sample","barcode")]
+dt2 <- colData(sr)[,c("sample","barcode")]
+dt1$tech <- "LR-WTA"
+dt2$tech <- "SR-WTA"
+cellDt <- as.data.table(rbind(dt1, dt2))
+.plotVenn <- \(samples, title, cols) {
+    cd <- cellDt[sample == samples]
+    ls <- split(cd$barcode, cd$tech)
+    ggvenn::ggvenn(ls, fill_color = cols) + 
+        ggtitle(title)
+}
+p1 <- .plotVenn("sampleA", "sampleA", 
+                c("#A6CEE3", "#B2DF8A"))
+p2 <- .plotVenn("sampleB", "sampleB",
+                 c("#B2DF8A", "#FDBF6F"))
+
+```
+
+
+### Mean UMI counts per cell
+```{r mean UMI counts}
+dt1 <- data.table(sample = lr$sample, 
+                  barcode = lr$barcode, 
+                  umi = colSums(counts(lr)),
+                  tech = "LR-WTA")
+dt2 <- data.table(sample = sr$sample, 
+                  barcode = sr$barcode, 
+                  umi = colSums(counts(sr)),
+                  tech = "SR-WTA")
+dt2[, barcode_type := fifelse(
+    barcode %in% dt1[sample == .BY$sample, barcode],
+    "SR-WTA-common",
+    "SR-WTA-unique"
+), by = sample]
+
+dt1[, barcode_type := fifelse(
+  barcode %in% dt2[sample == .BY$sample, barcode],
+  "LR-common",
+  "LR-unique"
+), by = sample]
+
+df <- rbind(dt1, dt2)
+df <- df[, .(mean_umi = mean(umi),
+         nCells = uniqueN(barcode)), 
+     by = .(sample, barcode_type, tech)]
+df[sample == "normal4", sample := "sampleA"]
+df[sample == "tumor4",  sample := "sampleB"]
+ggplot(df, aes(x = sample, y = mean_umi, col = barcode_type)) +
+    geom_point(size = 5) +
+    geom_text(aes(label = nCells), hjust = -0.3, vjust = 0.5, size = 4) + 
+    theme_bw() +
+    scale_color_brewer(palette = "Paired") +
+    labs(x = "Sample", y = "Mean UMIs per Cell", col = "Type")
+df_bqc <- df
+```
+
+
+
+### Pseudo-bulk counts for the same gene
+```{r, fig.width=7, fig.width=8}
+.pb <- \(sce, tech) {
+  # pseudobulk counts
+  counts_mat <- counts(sce)
+  samples <- sce$sample
+  groups <- split(colnames(sce), samples)
+  pb <- lapply(groups, \(cells) rowSums(counts_mat[, cells, drop = FALSE]))
+  pb_mat <- do.call(cbind, pb)
+  colnames(pb_mat) <- names(groups)
+
+  # convert to logCPM (edgeR)
+  dge <- DGEList(pb_mat)
+  logcpm <- cpm(dge, log = TRUE, prior.count = 1)
+
+  # melt into long format
+  res <- reshape2::melt(logcpm)
+  names(res) <- c("gene", "sample", "value")
+  res$tech <- tech
+  res$ensembl <- rowData(sce)$ENSEMBL
+  res
+}
+colnames(sr) <- sr$barcode
+df1 <- .pb(lr, "LR-WTA")
+df2 <- .pb(sr, "SR-WTA")
+df <- inner_join(df1, df2, by = c("gene", "sample", "ensembl"),
+                        suffix = c("_LR", "_SR"))
+
+setDT(df)
+df[sample == "normal4", sample := "sampleA"]
+df[sample == "tumor4",  sample := "sampleB"]
+# Plot
+p <- ggplot(df, aes(x = value_LR, y = value_SR)) +
+  geom_point_rast(alpha = 0.5, col = "black") +
+  geom_density_2d(color = "lightblue", bins = 10, linewidth = 0.4) + 
+  facet_wrap(~ sample) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+  stat_cor(aes(label = paste0("R = ", ..r..)), method = "pearson", size = 3) +
+  labs(
+    x = "LR-WTA",
+    y = "SR-WTA",
+    #title = "logCPM"
+  ) +
+  theme_minimal()
+# ggsave("/Volumes/jiayiwang/twist-comparison/docs/LR_WTAvsSR_WTA/plts/wta-logCPM.pdf",
+#         p,  width=8, height=4)
+```
+
+
+
+
+## Quality Control
+
+### Doublet removal
+```{r warning=FALSE}
+.doublet <- \(sce) {
+    sce <- aggregateAcrossFeatures(sce, ids = rownames(sce))
+    sce <- scDblFinder(sce, samples="sample", BPPARAM=MulticoreParam(3))
+    print(table(sce$scDblFinder.class, sce$sample))
+    sce <- sce[,sce$scDblFinder.class == "singlet"]
+}
+lr <- .doublet(lr)
+sr <- .doublet(sr)
+```
+
+### QC metrics
+
+```{r qc}
+# mitochondrial genes
+cols <- c("sum", "detected", "subsets_Mt_percent")
+log <- c(TRUE, TRUE, FALSE)
+type <- c("lower", "lower", "higher")
+    
+drop_cols <- paste0(cols, "_drop")
+.qc <- \(sce, title) {
+    mito <- grep("^MT-", rownames(sce), value = TRUE)
+    sce <- addPerCellQC(sce, subsets = list(Mt = mito))
+    for (i in seq_along(cols))
+        colData(sce)[[drop_cols[i]]] <- isOutlier(sce[[cols[i]]], 
+            nmads = 2.5, type = type[i], log = log[i], batch = sce$sample)
+    
+    sapply(drop_cols, function(i) 
+        sapply(drop_cols, function(j)
+            sum(sce[[i]] & sce[[j]])))
+    
+    cd <- data.frame(colData(sce))
+    p <- lapply(seq_along(cols), \(i) {
+        p <- ggplot(cd, aes_string(x = cols[i], alpha = drop_cols[i])) +
+            geom_histogram(bins = 100, show.legend = FALSE) +
+            scale_alpha_manual(values = c("FALSE" = 1, "TRUE" = 0.4)) +
+            facet_wrap(~sample, ncol = 1, scales = "free") + 
+            theme_classic() + theme(strip.background = element_blank())
+        if (log[i]) 
+            p <- p + scale_x_log10()
+        p
+    }) |> wrap_plots(ncol=3) + plot_annotation(title = title)
+    print(p)
+    return(sce)
+}
+lr <- .qc(lr, "LR")
+sr <- .qc(sr, "SR")
+```
+
+### Filtering
+```{r, fig.height=6, fig.width=8}
+.fil <- \(sce, title) {
+    layout(matrix(1:2, nrow = 1))
+    ol <- rowSums(as.matrix(colData(sce)[drop_cols])) != 0
+    sce$discarded <- ol <- rowSums(as.matrix(colData(sce)[drop_cols])) != 0
+    cd <- as.data.frame(colData(sce))
+    p1 <- ggplot(cd, aes(sum,subsets_Mt_percent,col=discarded)) +
+      geom_point(alpha=0.4) +
+      theme_bw() +
+      scale_color_brewer(palette = "Set1") +
+      scale_x_log10() +
+      xlab("Total counts") + ylab("% mitochondrial genes") +
+      ggtitle(title) + 
+      facet_wrap(~sample, ncol=3)
+    
+    
+    p2 <- ggplot(cd, aes(sum,detected,col=discarded)) +
+      geom_point(alpha=0.4) +
+      theme_bw() +
+      scale_color_brewer(palette = "Set1") +
+      scale_x_log10() + scale_y_log10() +
+      xlab("Total counts") + ylab("Non-zero features") +
+      facet_wrap(~sample, ncol=3)
+    
+    print(p1 + p2 + plot_layout(nrow=2, guides="collect"))
+    return(sce)
+}
+lr <- .fil(lr, "LR")
+sr <- .fil(sr, "SR")
+```
+
+### Summary
+```{r summary}
+# summary of cells kept
+.summary <- \(sce) {
+    ns <- table(sce$sample)
+    ns_fil <- table(sce$sample[!sce$discarded])
+    print(round(rbind(
+        before_filter = ns, after_filter = ns_fil, 
+        "%" = ns_fil / ns * 100), digits = 0))
+    
+    # drop outlier cells
+    sce <- sce[, !sce$discarded]
+    
+    # require count > 1 in at least 20 cells
+    sce <- sce[rowSums(counts(sce) > 1) >= 20, ]
+    dim(sce)
+    return(sce)
+}
+lr <- .summary(lr)
+sr <- .summary(sr)
+length(intersect(lr$barcode, sr$barcode))
+
+sr <- logNormCounts(sr)
+lr <- logNormCounts(lr)
+# saveRDS(lr, "/Volumes/jiayiwang/twist-comparison/data/counts/lr_sce_preprocessed_p4.rds")
+# saveRDS(sr, "/Volumes/jiayiwang/twist-comparison/data/counts/sr_sce_preprocessed_p4.rds")
+
+```
+
+## After QC comparison
+```{r}
+dt1 <- data.table(sample = lr$sample, 
+                  barcode = lr$barcode, 
+                  umi = colSums(counts(lr)),
+                  tech = "LR-WTA")
+dt2 <- data.table(sample = sr$sample, 
+                  barcode = sr$barcode, 
+                  umi = colSums(counts(sr)),
+                  tech = "SR-WTA")
+dt2[, barcode_type := fifelse(
+    barcode %in% dt1[sample == .BY$sample, barcode],
+    "SR-WTA-common",
+    "SR-WTA-unique"
+), by = sample]
+
+dt1[, barcode_type := fifelse(
+  barcode %in% dt2[sample == .BY$sample, barcode],
+  "LR-common",
+  "LR-unique"
+), by = sample]
+
+df <- rbind(dt1, dt2)
+df <- df[, .(mean_umi = mean(umi),
+         nCells = uniqueN(barcode)), 
+     by = .(sample, barcode_type, tech)]
+df[sample == "normal4", sample := "sampleA"]
+df[sample == "tumor4",  sample := "sampleB"]
+df_bqc[,qc:="Before QC"]
+df[,qc:="After QC"]
+fd <- rbind(df, df_bqc)
+fd[,qc:=factor(qc, levels=c("Before QC", "After QC"))]
+p <- ggplot(fd, aes(x =qc, y = mean_umi, col = barcode_type)) +
+  geom_point(size = 4, show.legend = TRUE) +
+  facet_grid(~sample) +
+  geom_text_repel(aes(label = nCells), size = 3, show.legend = FALSE) +  # prevents overlap
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, size = 0.8),
+    panel.grid.major = element_line(colour = "grey90"),  # show major grid
+    panel.grid.minor = element_line(colour = "grey90")   # show minor grid
+  ) +
+  scale_color_brewer(palette = "Paired") +
+  guides(colour = guide_legend(override.aes = list(shape = 16))) +  # dot only
+  labs(x = "Sample", y = "Mean UMIs per Cell", col = "Type")
+# ggsave("/Volumes/jiayiwang/twist-comparison/docs/LR_WTAvsSR_WTA/plts/wta-barcode_quality.pdf",
+#        p,  width=6.5, height=4.5)
+```
+
+
+### logCPM correlation
+
+
+```{r}
+colnames(sr) <- sr$barcode
+df1 <- .pb(lr, "LR-WTA")
+df2 <- .pb(sr, "SR-WTA")
+df <- inner_join(df1, df2, by = c("gene", "sample", "ensembl"),
+                        suffix = c("_LR", "_SR"))
+
+setDT(df)
+df[sample == "normal4", sample := "sampleA"]
+df[sample == "tumor4",  sample := "sampleB"]
+# Plot
+p <- ggplot(df, aes(x = value_LR, y = value_SR)) +
+  geom_point_rast(alpha = 0.5, col = "black") +
+  geom_density_2d(color = "lightblue", bins = 10, linewidth = 0.4) + 
+  facet_wrap(~ sample) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50") +
+  stat_cor(aes(label = paste0("R = ", ..r..)), method = "spearman", size = 3) +
+  labs(
+    x = "LR-WTA",
+    y = "SR-WTA",
+    #title = "logCPM"
+  ) +
+  theme_bw()
+```
+

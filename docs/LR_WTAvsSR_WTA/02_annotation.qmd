@@ -1,0 +1,506 @@
+---
+title: "Comparison of cell type annotation between SR and LR WTA scRNA-seq - annotation"
+format:
+  html:
+    self-contained: true
+    toc: true
+    code-fold: true
+    code-tools: true
+    toc_float: true
+    
+    
+author: Jiayi Wang
+---
+
+
+
+## Dependencies
+```{r}
+suppressPackageStartupMessages({
+    library(SingleCellExperiment)
+    library(scran)
+    library(scater)
+    library(igraph)
+    library(patchwork)
+    library(ggplot2)
+    library(harmony)
+    library(ComplexHeatmap)
+    library(viridis)
+    library(cowplot)
+    library(mclust)
+    library(Seurat)
+    library(dplyr)
+    library(vegan)
+    library(ggridges)
+    library(data.table)
+    library(ggrastr)
+    library(RColorBrewer)
+    library(ggpubr)
+})
+```
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/Volumes/jiayiwang/twist-comparison/")
+```
+
+
+## Load Celltypist results
+```{r}
+# lr_cts <- read.csv("data/marker/lr_celltypist/predicted_labels.csv")
+# sr_cts <- read.csv("data/marker/sr_celltypist/predicted_labels.csv")
+# idx <- match(colnames(sr),sr_cts$X)
+# sr$cell_type <- sr_cts$majority_voting[idx]
+# idx <- match(colnames(lr),lr_cts$X)
+# lr$cell_type <- lr_cts$majority_voting[idx]
+# plotUMAP(lr, color_by = "cell_type") +
+#     plotUMAP(sr, color_by = "cell_type")
+
+# saveRDS(lr, "data/counts/lr_annotated_p4.rds")
+# saveRDS(sr, "data/counts/sr_annotated_p4.rds")
+lr <- readRDS("data/counts/lr_annotated_p4.rds")
+sr <- readRDS("data/counts/sr_annotated_p4.rds")
+```
+
+## Pseudobulk gene expression correlation
+```{r}
+gene <- intersect(rownames(sr), rownames(lr))
+cd <- rbind(
+  data.table(colData(sr)[,c("cell_type")], tech = "SR", cell = colnames(sr)),
+  data.table(colData(lr)[,c("cell_type")], tech = "LR", cell = colnames(lr))
+)
+names(cd)[1] <- "cell_type"
+get_pb <- function(x, meta) {
+  m <- as.matrix(counts(x)[gene, ])
+  pb <- as.data.table(m %*% model.matrix(~ 0 + cell_type, data = meta))
+  setnames(pb, gsub("^cell_type", "", names(pb))) 
+  pb[, gene := gene]
+}
+
+pb_sr <- get_pb(sr, cd[tech == "SR"])
+pb_lr <- get_pb(lr, cd[tech == "LR"])
+
+dt <- merge(
+  melt(pb_sr, id.vars = "gene", variable.name = "cell_type", value.name = "sr"),
+  melt(pb_lr, id.vars = "gene", variable.name = "cell_type", value.name = "lr"),
+  by = c("gene", "cell_type")
+)
+dt <- dt[lr > 0 & sr > 0]
+gg <- ggplot(dt, aes(lr, sr)) +
+    facet_wrap(~cell_type) +
+    theme_classic() +
+    geom_point_rast() +
+    geom_density_2d(color = "lightblue", linewidth = 0.3) +
+    scale_x_log10() + 
+    scale_y_log10() +
+    stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "top", size = 3)
+```
+
+
+
+## UMAP
+```{r}
+df1 <- data.frame(reducedDim(lr, "UMAP"), cell_type = colData(lr)$cell_type, tech = "LR-WTA")
+df2 <- data.frame(reducedDim(sr, "UMAP"), cell_type = colData(sr)$cell_type, tech = "SR-WTA")
+df <- rbind(df1,df2)
+aes <- list(
+    facet_grid( ~ tech, scales="free"),
+    geom_point_rast(aes(UMAP1, UMAP2), 
+        shape=16, alpha=0.1, size=0.5),
+    guides(col=guide_legend(
+        ncol=1, title.position="top",
+        override.aes=list(alpha=1, size=2))),
+    theme_minimal(6), theme(
+        aspect.ratio=1,
+        plot.margin=margin(),
+        axis.text=element_blank(),
+        panel.grid=element_blank(),
+        axis.title=element_text(hjust=0),
+        panel.border=element_rect(fill=NA),
+        legend.key.size=unit(0.25, "lines")))
+
+
+nk <- length(unique(df$cell_type))
+cols <- setNames( colorRampPalette(brewer.pal(12, "Paired"))(nk),unique(df$cell_type))
+gg <- ggplot(df, aes(col=cell_type)) +
+    scale_color_manual(values=cols) +
+    aes & theme(
+      plot.margin=margin(0),
+      #legend.position="bottom",
+      legend.justification=c(0.5, 1),
+      legend.box.spacing=unit(0, "pt"),
+      plot.tag=element_text(size=9, face="bold")) 
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/cell_type_umap.pdf",
+#         gg,  width=4.5, height=3)
+```
+
+```{r}
+sr_dt <- data.table(cell_type = sr$cell_type)
+lr_dt <- data.table(cell_type = lr$cell_type)
+
+# Calculate proportions
+sr_prop <- sr_dt[, .N, by = cell_type][, .(cell_type, proportion = N / sum(N), dataset = "SR-WTA")]
+lr_prop <- lr_dt[, .N, by = cell_type][, .(cell_type, proportion = N / sum(N), dataset = "LR-WTA")]
+
+# Combine
+df <- rbind(sr_prop, lr_prop)
+
+# Plot
+gg <- ggplot(df, aes(x = dataset, y = proportion, fill = cell_type)) +
+  geom_bar(stat = "identity", position = "stack", size = 0.3) +
+  scale_fill_manual(values = cols) +
+  labs(x = "Dataset", y = "Proportion of cells", fill = "Cell type") +
+  theme_minimal() +
+  theme(
+      plot.margin = margin(0),
+      #legend.position = "bottom",
+      legend.justification = c(0.5, 1),
+      legend.box.spacing = unit(0, "pt"),
+      plot.tag = element_text(size = 9, face = "bold"),
+      panel.border = element_rect(color = "black", fill = NA, size = 0.5)
+  )
+
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/cell_type_bar.pdf",
+#         gg,  width=5, height=6)
+
+df_all <- df
+df_all[,cells:="all"]
+```
+
+
+## Reads distribution per cell type
+
+### Investigate all cells (with called cell barcodes)
+```{r}
+dt1 <- data.table(library_size = colSums(counts(lr)), 
+                  barcode = lr$barcode, 
+                  cell_type = lr$cell_type, 
+                  sample = ifelse(lr$sample=="normal4", "sampleA", "sampleB"),
+                  tech = "LR-WTA")
+dt2 <- data.table(library_size = colSums(counts(sr)), 
+                  barcode = sr$barcode, 
+                  cell_type = sr$cell_type, 
+                  sample = ifelse(sr$sample=="normal4", "sampleA", "sampleB"),
+                  tech = "SR-WTA")
+dt <- rbind(dt1, dt2)
+dt <- dt %>%
+  group_by(cell_type) %>%
+  mutate(mean_libsize = mean(library_size)) %>%
+  ungroup()
+setDT(dt)
+dt[, cell_type := factor(cell_type, levels = rev(c(
+  "Myeloid cells","SCPs", "Fibroblast",
+  "T cells", "Endothelium", "Steroidogenic cells"
+)))]
+#cols <- setNames(colorRampPalette(brewer.pal(12, "Paired"))(nk),unique(sr$cell_type))
+p <- ggplot(dt, aes(x = library_size, y = cell_type, 
+                    #y = reorder(cell_type, mean_libsize),
+                    fill = cell_type)) +
+  geom_density_ridges(alpha = 0.8, 
+                      color = "grey") +
+  facet_grid(sample ~ tech) +
+  scale_x_log10() +  
+  labs(
+    x = "Library size",
+  ) +
+  scale_fill_manual(values=cols) +
+  theme_minimal() +
+  theme(
+    legend.position = "none", 
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.6)
+  )
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/cell_type_ridges.pdf",
+#        p, width = 6, height = 6)
+```
+
+
+### Investigate all cells (with SR-WTA barcodes as reference)
+```{r}
+min_lib <- dt1[, .(min_library_size = min(library_size)), by = sample]
+min_lib[,tech:="LR-WTA"]
+lr_all <- readRDS("data/counts/lr_p4_allcell.rds")
+lr_all <- lr_all[intersect(rownames(sr), rownames(lr_all)), 
+                 intersect(sr$barcode, colnames(lr_all))]
+id <- match(colnames(lr_all), colnames(sr))
+lr_all$cell_type <- sr$cell_type[id]
+lr_all$barcode <- colnames(lr_all)
+dt1 <- data.table(library_size = colSums(counts(lr_all)), 
+                  barcode = lr_all$barcode, 
+                  cell_type = lr_all$cell_type, 
+                  sample = lr_all$sample,
+                  tech = "LR-WTA")
+dt2 <- data.table(library_size = colSums(counts(sr)), 
+                  barcode = sr$barcode, 
+                  cell_type = sr$cell_type, 
+                  sample = ifelse(sr$sample=="normal4", "sampleA", "sampleB"),
+                  tech = "SR-WTA")
+dt <- rbind(dt1, dt2)
+dt <- dt %>%
+  group_by(cell_type) %>%
+  mutate(mean_libsize = mean(library_size)) %>%
+  ungroup()
+dt <- na.omit(dt)
+dt$sample <- substr(dt$sample, 1, 7)
+p <- ggplot(dt, aes(x = library_size, 
+                    y = reorder(cell_type, mean_libsize),
+                    fill = cell_type)) +
+  geom_density_ridges(alpha = 0.8, 
+                      color = "grey") +
+  facet_grid(sample ~ tech) +
+  scale_x_log10() +  
+  labs(
+    x = "Library size",
+  ) +
+  scale_fill_manual(values=cols) +
+  theme_minimal() +
+  theme(
+    legend.position = "none", 
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.6)
+  )
+p <- p +
+  geom_vline(
+    data = min_lib,
+    aes(xintercept = min_library_size),
+    linetype = "dashed",
+    color = "darkred",
+    linewidth = 0.6
+  )
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/cell_type_ridges_all.pdf",
+#        p, width = 6, height = 6)
+```
+
+
+### Agreement
+```{r, fig.width=8}
+.dr <- \(sce) {
+    tbl <- modelGeneVar(sce, block = sce$sample)
+    idx <- order(tbl$bio, decreasing=TRUE)[1:3000]
+    rowData(sce)$hvg <- FALSE
+    rowData(sce)$hvg[idx] <- TRUE
+    rowData(sce)$bio <- tbl$bio 
+    sce <- runPCA(sce, subset_row = idx, ncomponents = 20)
+    sce <- runTSNE(sce)
+    sce <- runUMAP(sce)
+}
+set.seed(2024)
+colnames(sr) <- sr$barcode
+ci <- intersect(colnames(lr), colnames(sr))
+gi <- intersect(rownames(lr), rownames(sr))
+lr <- lr[gi,ci]
+sr <- sr[gi,ci]
+lr <- .dr(lr)
+sr <- .dr(sr)
+
+umap_lr <- reducedDim(lr, "UMAP")
+umap_sr <- reducedDim(sr, "UMAP")
+mclust::adjustedRandIndex(lr$cluster_id, sr$cluster_id)
+
+## after alignment 
+umap_lr <- reducedDim(lr, "UMAP")
+umap_sr <- reducedDim(sr, "UMAP")
+proc <- procrustes(umap_lr, umap_sr, scale = TRUE)
+aligned_sr <- proc$Yrot
+reducedDim(sr, "UMAP_aligned") <- aligned_sr
+plotUMAP(sr, dimred = "UMAP_aligned", color_by = "cell_type") + ggtitle("SR") + 
+    coord_equal() +
+    plotUMAP(lr, color_by = "cell_type") + ggtitle("LR") + 
+    coord_equal() 
+```
+
+
+```{r}
+df1 <- data.frame(reducedDim(lr, "UMAP"), cell_type = colData(lr)$cell_type, tech = "LR-WTA")
+df2 <- data.frame(reducedDim(sr, "UMAP_aligned"), cell_type = colData(sr)$cell_type, tech = "SR-WTA")
+names(df2) <- names(df1)
+fd <- rbind(df1,df2)
+aes <- list(
+    facet_grid( ~ tech, scales="free"),
+    geom_point_rast(aes(UMAP1, UMAP2), 
+        shape=16, alpha=0.1, size=0.5),
+    guides(col=guide_legend(
+        ncol=1, title.position="top",
+        override.aes=list(alpha=1, size=2))),
+    theme_minimal(6), theme(
+        aspect.ratio=1,
+        plot.margin=margin(),
+        axis.text=element_blank(),
+        panel.grid=element_blank(),
+        axis.title=element_text(hjust=0),
+        panel.border=element_rect(fill=NA),
+        legend.key.size=unit(0.25, "lines")))
+
+
+nk <- length(unique(df$cell_type))
+cols <- setNames(colorRampPalette(brewer.pal(12, "Paired"))(nk),unique(df$cell_type))
+gg <- ggplot(fd, aes(col=cell_type)) +
+    scale_color_manual(values=cols) +
+    aes & theme(
+      plot.margin=margin(0),
+      #legend.position="bottom",
+      legend.justification=c(0.5, 1),
+      legend.box.spacing=unit(0, "pt"),
+      plot.tag=element_text(size=9, face="bold")) 
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/common_cell_type_umap.pdf",
+#         gg,  width=4.5, height=3)
+```
+
+### Proportion of cell types using common cells
+```{r}
+sr_dt <- data.table(cell_type = sr$cell_type)
+lr_dt <- data.table(cell_type = lr$cell_type)
+
+# Calculate proportions
+sr_prop <- sr_dt[, .N, by = cell_type][, .(cell_type, proportion = N / sum(N), dataset = "SR-WTA")]
+lr_prop <- lr_dt[, .N, by = cell_type][, .(cell_type, proportion = N / sum(N), dataset = "LR-WTA")]
+
+# Combine
+df <- rbind(sr_prop, lr_prop)
+
+# Plot
+df[,cells:="common"]
+df <- rbind(df_all, df)
+
+gg <- ggplot(df, aes(x = dataset, y = proportion, fill = cell_type)) +
+  geom_bar(stat = "identity", position = "stack", size = 0.3) +
+  scale_fill_manual(values = cols) +
+  facet_grid(~cells) +
+  labs(x = "Dataset", y = "Proportion of cells") +
+  theme_minimal() +
+  theme(
+      plot.margin = margin(0),
+      #legend.position = "bottom",
+      legend.justification = c(0.5, 1),
+      legend.box.spacing = unit(0, "pt"),
+      plot.tag = element_text(size = 9, face = "bold"),
+      panel.border = element_rect(color = "black", fill = NA, size = 0.5)
+  )
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/cell_type_bar.pdf",
+#         gg,  width=8, height=7)
+```
+
+
+```{r}
+cb <- intersect(lr$barcode, sr$barcode)
+LR_cell <- lr$cell_type[match(cb, lr$barcode)]
+SR_cell <- sr$cell_type[match(cb, sr$barcode)]
+adjustedRandIndex(LR_cell, SR_cell)
+mat <- table(SR_cell, LR_cell)
+n_colors <- 100
+breaks <- seq(sqrt(min(mat)), sqrt(max(mat)), length.out = n_colors)
+
+# color function
+rownames(mat) <- factor(rownames(mat), levels = names(cols))
+colnames(mat) <- factor(colnames(mat), levels = names(cols))
+ha_row <- rowAnnotation(
+  CellType = rownames(mat),
+  col = list(CellType = cols),
+  show_annotation_name = FALSE
+)
+
+ha_col <- HeatmapAnnotation(
+  CellType = colnames(mat),
+  col = list(CellType = cols),
+  show_annotation_name = FALSE
+)
+# Plot heatmap
+p <- Heatmap(
+  sqrt(mat),           
+  name = "sqrt(Counts)",
+  #col = col_fun,
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  row_names_side = "left",
+  column_names_rot = 45,
+  top_annotation = ha_col,
+  left_annotation = ha_row,
+  rect_gp = gpar(col = "white", lwd = 1),
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.text(mat[i, j], x, y, gp = gpar(col = "white", fontsize = 10))
+  }, show_heatmap_legend = FALSE
+)
+p
+# pdf("/Volumes/jiayiwang/twist-comparison/plts/heatmap_cell_typing.pdf", height = 8, width = 8)
+# p
+# dev.off()
+```
+
+## Euclidean distance
+```{r}
+df_lr <- as.data.frame(reducedDim(lr, "UMAP"))
+df_sr <- as.data.frame(reducedDim(sr, "UMAP_aligned"))
+names(df_sr) <- names(df_lr)
+
+df_lr$tech <- "PacBio"
+df_lr$cluster_id <- lr$cluster_id
+df_sr$tech <- "illumina"
+df_sr$cluster_id <- sr$cluster_id
+
+df_lr$cell <- colnames(lr)
+df_sr$cell <- colnames(sr)
+
+umap_df <- rbind(df_lr, df_sr)
+n_clusters <- length(unique(umap_df$cluster_id))
+colnames(umap_df)[1:2] <- c("UMAP1", "UMAP2")
+ggplot(umap_df, aes(UMAP1, UMAP2, col=tech)) + 
+    geom_point(alpha = 0.3) +
+    theme_bw() + coord_equal() +
+ggplot(umap_df, aes(UMAP1, UMAP2, col=as.factor(cluster_id))) + 
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_manual(values = hue_pal()(n_clusters)) +
+  theme_bw() + coord_equal()
+
+distances <- sqrt(rowSums((umap_lr - aligned_sr)^2))
+dist_df <- data.frame(
+  cell = colnames(lr),
+  sample = lr$sample,
+  distance = distances
+)
+ggplot(dist_df, aes(distance, col=sample)) + geom_density() + theme_bw()
+```
+
+
+
+## Myeloid subtypes
+```{r}
+lr_mye <- fread("data/marker/lr_myeloid_high_celltypist/predicted_labels.csv")
+sr_mye <- fread("data/marker/sr_myeloid_high_celltypist/predicted_labels.csv")
+lr_mye[,tech:="LR-WTA"]
+sr_mye[,tech:="SR-WTA"]
+mye <- rbind(lr_mye, sr_mye)
+dt <- copy(mye)
+
+# compute counts per tech × predicted_labels
+counts <- dt[, .N, by = .(tech, predicted_labels)]
+
+# compute proportions per tech
+counts[, prop := N / sum(N), by = tech]
+nk <- length(unique(dt$predicted_labels))
+cols <- setNames(colorRampPalette(brewer.pal(12, "Paired"))(nk),unique(dt$predicted_labels))
+# plot
+gg <- ggplot(counts, aes(x = tech, y = prop, fill = predicted_labels)) +
+  geom_bar(stat = "identity", width = 0.6) +  # black border
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0,1)) +
+  labs(x = NULL, y = "Proportion", fill = "Cell type") +
+  scale_fill_manual(values = cols) +
+  theme_minimal(6) +
+  theme(
+    aspect.ratio = 1.5,
+    panel.border = element_rect(color = "black", fill = NA, size = 0.6),  
+    panel.background = element_blank(),                                  
+    legend.key = element_blank()                                        
+  ) +
+  guides(fill = guide_legend(
+    ncol = 1,
+    override.aes=list(shape = 21, alpha=1, size=2)
+  ))
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/cell_subtype_bar.pdf",
+#         gg,  width=4.5, height=5)
+```
+
+
+

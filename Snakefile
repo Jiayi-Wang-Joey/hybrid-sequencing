@@ -33,12 +33,6 @@ align = {
 quantify = {
     "sce": sce
 }
-################## Reads quality ##################
-read_qc = {
-    #"read_distribution": read_distribution,
-    "genebody_coverage": genebody_coverage,
-    #"barcode_count": barcode_count
-}
 
 ################## Variant calling ##################
 all_variants = expand(res_dir + "variants/merged/{sample}.pileup.vcf.gz", sample=SAMPLE_LR)
@@ -61,7 +55,7 @@ rule all:
     input:
         [x for x in preprocess.values()],
         [x for x in align.values()],
-        #[x for x in quantify.values()],
+        [x for x in quantify.values()],
         [x for x in read_qc.values()],
         [x for x in variants.values()],
         plts

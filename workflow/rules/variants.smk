@@ -197,14 +197,10 @@ rule merge_vcf:
     shell:
         """
         for f in {input}; do
-            if [ ! -f "$f.tbi" ]; then
-                echo "Indexing missing file: $f" >> {log}
-                bcftools index "$f" >> {log} 2>&1
-            fi
+            bcftools index --force "$f" >> {log} 2>&1
         done
-
-        bcftools merge -Oz -o {output} {input} > {log} 2>&1
-        bcftools index {output}
+        bcftools merge -Oz -o {output} {input} >> {log} 2>&1
+        bcftools index --force {output} >> {log} 2>&1
         """
 
 rule vcf_pileup_annotate:

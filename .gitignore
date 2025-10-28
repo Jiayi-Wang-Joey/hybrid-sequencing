@@ -17,3 +17,6 @@ SnpEff*
 snpEff*
 .smbdeleteAAA265088c3
 docs/
+workflow/envs/arch/
+workflow/rules/arch/
+workflow/scripts/arch/

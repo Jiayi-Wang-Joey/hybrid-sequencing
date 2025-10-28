@@ -9,7 +9,6 @@ genome: "/home/jiayiwang/pacbio/data/genome/GRCh38.p14.genome.fa"
 annotation: "/home/jiayiwang/pacbio/data/genome/gencode.v47.chr_patch_hapl_scaff.annotation.sorted.gtf"
 transcriptome_bed: "/home/jiayiwang/pacbio/data/genome/gencode.v47.chr_patch_hapl_scaff.annotation.bed"
 cds_bed: "/home/jiayiwang/pacbio/data/genome/gencode.v47.chr_patch_hapl_scaff.cds.bed"
-rseqc_gene_model: "/home/jiayiwang/tools/RSeQC-5.0.1/gene_model/hg38_GENCODE_V46.bed"
 whitelist: "data/barcode/3M-3pgex-may-2023.REVCOMP.txt"
 
 # singualrity images

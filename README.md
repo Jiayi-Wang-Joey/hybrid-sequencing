@@ -16,7 +16,19 @@ All figures in the manuscript were generated using files located in the `docs` d
 TBD
 
 ### Citation
-TBD
+```bash
+@ARTICLE{Wang2025-mv,
+  title    = "Hybrid untargeted and targeted {RNA} sequencing facilitates
+              genotype-phenotype associations at single-cell resolution",
+  author   = "Wang, Jiayi and Maldifassi, Maria Constanza and
+              Bratus-Neuenschwander, Anna and Zhang, Qin and Beuschlein, Felix
+              and Penton, David and Robinson, Mark D",
+  journal  = "bioRxiv",
+  month    =  nov,
+  year     =  2025
+}
+
+```
 
 ### Contact
 If you have any question regarding the code, please contact jiayi.wang2@uzh.ch

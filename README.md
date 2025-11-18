@@ -13,7 +13,7 @@ snakemake --cores 8 --use-conda
 All figures in the manuscript were generated using files located in the `docs` directory.
 
 ### Data Availability
-TBD
+Expression count table is available at https://zenodo.org/records/17494517. The raw sequencing data is under the submission process under EGA. 
 
 ### Citation
 ```bash

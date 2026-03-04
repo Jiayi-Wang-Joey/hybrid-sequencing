@@ -1,0 +1,314 @@
+---
+title: "Downsteam analysis for downsampled SR-WTA vs. LR-WTA"
+format:
+  html:
+    self-contained: true
+    toc: true
+    code-fold: true
+    code-tools: true
+    toc_float: true
+    
+    
+author: Jiayi Wang
+---
+
+## Dependencies
+```{r}
+suppressPackageStartupMessages({
+    library(SingleCellExperiment)
+    library(SingleCellExperiment)
+    library(DropletUtils)
+    library(ggvenn)
+    library(AnnotationDbi)
+    library("EnsDb.Hsapiens.v86")  
+    library(ggplot2)
+    library(scater)
+    library(Biostrings)
+    library(ggrastr)
+    library(scDblFinder)
+    library(RColorBrewer)
+    library(BiocParallel)
+    library(scran)
+})
+```
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/Volumes/jiayiwang/twist-comparison/")
+```
+
+### Predefined functions
+```{r}
+.pre <- \(sce) {
+    ensembl_ids <- rownames(sce)
+    ensembl_ids <- sub("\\..*$", "", ensembl_ids)
+
+    gene_symbols <- mapIds(EnsDb.Hsapiens.v86,
+                           keys = ensembl_ids,
+                           column = "SYMBOL",
+                           keytype = "GENEID",
+                           multiVals = "first")
+    gene_symbols[is.na(gene_symbols)] <- ensembl_ids[is.na(gene_symbols)]
+
+    rowData(sce) <- DataFrame(ENSEMBL = ensembl_ids,
+                              SYMBOL = gene_symbols)
+    rownames(sce) <- gene_symbols
+    rm(ensembl_ids)
+    rm(gene_symbols)
+    sce <- sce[rowSums(counts(sce)) > 0,]
+    sce <- sce[,colSums(counts(sce)) > 0]
+    
+}
+
+.doublet <- \(sce) {
+    sce <- aggregateAcrossFeatures(sce, ids = rownames(sce))
+    sce <- scDblFinder(sce, samples="sample", BPPARAM=MulticoreParam(3))
+    print(table(sce$scDblFinder.class, sce$sample))
+    sce <- sce[,sce$scDblFinder.class == "singlet"]
+}
+
+cols <- c("sum", "detected", "subsets_Mt_percent")
+log <- c(TRUE, TRUE, FALSE)
+type <- c("lower", "lower", "higher")
+    
+drop_cols <- paste0(cols, "_drop")
+.qc <- \(sce) {
+    mito <- grep("^MT-", rownames(sce), value = TRUE)
+    sce <- addPerCellQC(sce, subsets = list(Mt = mito))
+    for (i in seq_along(cols))
+        colData(sce)[[drop_cols[i]]] <- isOutlier(sce[[cols[i]]], 
+            nmads = 2.5, type = type[i], log = log[i], batch = sce$sample)
+    
+    sapply(drop_cols, function(i) 
+        sapply(drop_cols, function(j)
+            sum(sce[[i]] & sce[[j]])))
+    
+    cd <- data.frame(colData(sce))
+    ol <- rowSums(as.matrix(colData(sce)[drop_cols])) != 0
+    sce$discarded <- ol <- rowSums(as.matrix(colData(sce)[drop_cols])) != 0
+    sce <- sce[, !sce$discarded]
+    sce <- sce[rowSums(counts(sce) > 1) >= 20, ]
+    sce <- logNormCounts(sce)
+    return(sce)
+}
+
+    
+.dr <- \(sce) {
+    tbl <- modelGeneVar(sce, block = sce$sample)
+    idx <- order(tbl$bio, decreasing=TRUE)[1:3000]
+    rowData(sce)$hvg <- FALSE
+    rowData(sce)$hvg[idx] <- TRUE
+    rowData(sce)$bio <- tbl$bio 
+    sce <- runPCA(sce, subset_row = idx, ncomponents = 20)
+    sce <- runTSNE(sce)
+    sce <- runUMAP(sce)
+}
+```
+
+
+
+## Use default cell calling methods
+
+### Annotated LR-WTA
+```{r}
+lr <- readRDS("data/counts/lr_annotated_p4.rds")
+```
+
+### Downsampled SR-WTA (unannotated)
+```{r}
+seeds <- c(42, 2026, 2, 7025, 226)
+path <- "/Volumes/jiayiwang/twist-comparison/results/cellranger/"
+seed_sr <- lapply(seeds, \(seed) {
+    srs <- lapply(samples, \(s) {
+    x <- read10xCounts(paste0(path, s, "_", seed, "/outs/filtered_feature_bc_matrix"))
+    x$sample <- s
+    x$barcode <- as.character(
+        reverseComplement(DNAStringSet(sub("-1$", "", x$Barcode))))
+    x })
+    sr <- .pre(srs)
+})
+names(seed_sr) <- seeds
+```
+
+
+### Quality control and dimensionality reduction on downsampled SR-WTA
+```{r message=FALSE}
+pre_srs <- lapply(seq_along(seeds), \(i) {
+    seed <- seeds[i]
+    sce <- seed_sr[[i]]
+    sce <- .pre(sce)
+    sce <- .doublet(sce)
+    sce <- .qc(sce)
+    sce <- .dr(sce)
+    fs <- paste0("data/counts/downsample_sr_", seed, ".csv")
+    
+    write.csv(as.matrix(counts(sce)), file = fs, row.names = TRUE)
+    sce
+})
+```
+
+## CellTypist results
+```{r}
+pre_srs <- lapply(seq_along(seeds), \(i) {
+    seed <- seeds[i]
+    sce <- pre_srs[[i]]
+    fs <- paste0("data/marker/sr_downsample_", seed, "_celltypist/predicted_labels.csv")
+    cells <- read.csv(fs)
+    sce$cell_type <- cells$majority_voting
+    sce
+})
+
+```
+
+## UMAPs
+```{r}
+umap <-  lapply(seq_along(seeds), \(i) {
+    seed <- seeds[i]
+    sce <- pre_srs[[i]]
+    dt <- as.data.table(reducedDim(sce, "UMAP"))
+    dt[,cell_type := sce$cell_type]
+    dt[,seed:=paste0("Seed ", i)]
+    dt
+}) |> rbindlist()
+lr_umap <- as.data.table(reducedDim(lr, "UMAP"))
+lr_umap$seed <- "LR-WTA"
+lr_umap$cell_type <- lr$cell_type
+umap <- rbind(umap, lr_umap)
+```
+
+```{r}
+aes <- list(
+    facet_grid( ~ seed, scales="free"),
+    geom_point_rast(aes(UMAP1, UMAP2), 
+        shape=16, alpha=0.1, size=0.5),
+    guides(col=guide_legend(
+        ncol=1, title.position="top",
+        override.aes=list(alpha=1, size=2))),
+    labs(color = "Cell Type"),
+    theme_minimal(), theme(
+        aspect.ratio=1,
+        plot.margin=margin(),
+        axis.text=element_blank(),
+        panel.grid=element_blank(),
+        axis.title=element_text(hjust=0),
+        panel.border=element_rect(fill=NA),
+        legend.key.size=unit(0.25, "lines")))
+
+
+cols <- c(
+  "Myeloid cells"        = "#A6CEE3",
+  "Endothelium"          = "#98D277",
+  "T cells"              = "#B15928",
+  "Fibroblast"           = "#F16666",
+  "SCPs"                 = "#7D54A6",
+  "Steroidogenic cells"  = "#FE982C"
+)
+
+gg <- ggplot(umap, aes(col=cell_type)) +
+    scale_color_manual(values=cols) +
+    aes & theme(
+      plot.margin=margin(0),
+      legend.justification=c(0.5, 1),
+      legend.box.spacing=unit(0, "pt"),
+      plot.tag=element_text(size=9, face="bold")) 
+
+ggsave("/Volumes/jiayiwang/twist-comparison/plts/downsample_umaps.pdf",
+       gg,  width=10, height=2)
+```
+
+
+```{r}
+prop <- umap[, .N, by = .(seed, cell_type)][
+  , prop := N / sum(N), by = seed
+]
+gg <- ggplot(prop, aes(x = seed, y = prop, fill = cell_type)) +
+  geom_col(width = 0.9) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+  theme_classic() +
+  labs(x = NULL, y = "Cell type proportion",
+       fill = "Cell Type") + 
+    scale_fill_manual(values = cols) 
+
+ggsave("/Volumes/jiayiwang/twist-comparison/plts/downsample_bar.pdf",
+       gg,  width=8, height=5)
+```
+
+## Use EmptyDrops calling methods
+
+### LR-WTA
+```{r}
+lr <- readRDS("data/counts/lr_ed.rds")
+.preprocess <- \(sce) {
+    sce <- .pre(sce)
+    sce <- .doublet(sce)
+    sce <- .qc(sce)
+    sce <- .dr(sce)
+    sce
+}
+lr <- .preprocess(lr)
+#write.csv(as.matrix(counts(lr)), file = "data/counts/lr_ed_mtx.csv", row.names = TRUE)
+cells <- fread("data/marker/lr_ed_celltypist/predicted_labels.csv")
+lr$cell_type <- cells$majority_voting
+lr_umap <- as.data.table(reducedDim(lr, "UMAP"))
+lr_umap[,cell_type:=lr$cell_type]
+lr_umap[,seed:="LR-WTA"]
+```
+
+### SR-WTA
+```{r message=FALSE}
+srs <- lapply(seeds, \(seed) {
+    sce <- readRDS(paste0("/Volumes/jiayiwang/twist-comparison/data/counts/sr_", 
+            seed, "_ed.rds"))
+    sce <- .preprocess(sce)
+})
+# for (i in seq_along(seeds)) {
+#     sce <- srs[[i]]
+#     seed <- seeds[[i]]
+#     fs <- paste0("data/counts/downsample_sr_", seed, "_ed.csv")
+#     write.csv(as.matrix(counts(sce)), file = fs, row.names = TRUE)
+# }
+umap <- lapply(seq_along(seeds), \(i) {
+    sce <- srs[[i]]
+    seed <- seeds[[i]]
+    fs <- paste0("data/marker/sr_downsample_", seed, "_ed_celltypist/predicted_labels.csv")
+    cells <- fread(fs)
+    sce$cell_type <- cells$majority_voting
+    dt <- as.data.table(reducedDim(sce, "UMAP"))
+    dt[, cell_type := sce$cell_type]
+    dt[,seed:=paste0("Seed ", i)]
+}) |> rbindlist()
+umap <- rbind(umap, lr_umap)
+```
+
+### UMAP
+```{r}
+gg <- ggplot(umap, aes(col=cell_type)) +
+    scale_color_manual(values=cols) +
+    aes & theme(
+      plot.margin=margin(0),
+      legend.justification=c(0.5, 1),
+      legend.box.spacing=unit(0, "pt"),
+      plot.tag=element_text(size=9, face="bold")) 
+
+ggsave("/Volumes/jiayiwang/twist-comparison/plts/downsample_umaps_ed.pdf",
+       gg,  width=10, height=2)
+```
+
+### Cell type proportion
+```{r}
+prop <- umap[, .N, by = .(seed, cell_type)][
+  , prop := N / sum(N), by = seed
+]
+gg <- ggplot(prop, aes(x = seed, y = prop, fill = cell_type)) +
+  geom_col(width = 0.9) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+  theme_classic() +
+  labs(x = NULL, y = "Cell type proportion",
+       fill = "Cell Type") + 
+    scale_fill_manual(values = cols) 
+
+ggsave("/Volumes/jiayiwang/twist-comparison/plts/downsample_bar_ed.pdf",
+       gg,  width=8, height=5)
+```
+
+
+

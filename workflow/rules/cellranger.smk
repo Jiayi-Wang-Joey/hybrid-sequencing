@@ -1,17 +1,17 @@
-rule run_cellranger:
+
+rule cellranger_count:
     input:
         config["sr_fastq_dir"] + "{sample}"
     output:
         directory(res_dir + "cellranger/{sample}")
-    conda:
-        "envs/cellranger.yaml"
     params:
-        cores = 8
+        cores = 8,
+        cellranger = config["cellranger"]
     log:
         "logs/cellranger/{sample}.log"
     shell:
         """
-        cellranger count \
+        {params.cellranger} count \
           --id={wildcards.sample} \
           --transcriptome=GRCh38p14_gencode_v47 \
           --fastqs={input} \

@@ -30,12 +30,13 @@ suppressPackageStartupMessages({
     library(ggrastr)
     library(BiocParallel)
     library(tidyr)
+    library(scales)
     #library(forcats)
 })
 ```
 
 ```{r setup, include=FALSE}
-knitr::opts_knit$set(root.dir = "/home/jiayiwang/twist-comparison/")
+knitr::opts_knit$set(root.dir = "/Volumes//jiayiwang/twist-comparison/")
 ```
 
 ## Data loading
@@ -43,9 +44,10 @@ knitr::opts_knit$set(root.dir = "/home/jiayiwang/twist-comparison/")
 samples <- c("sampleB_twist_all",
              "sampleA_twist_all",
              "sampleA_all",
-             "sampleB_all")
+             "sampleB_all"
+             )
 
-sce_dir <- "/home//jiayiwang/loggedfs_david_penton/result/quantify/transcriptome/gene_sce/"
+sce_dir <- "/Volumes/jiayiwang/loggedfs_david_penton/result/quantify/transcriptome/gene_sce/"
 sces <- lapply(samples, \(smp) {
     sce <- readRDS(file.path(sce_dir, paste0(smp, ".rds")))
     ensembl_ids <- rownames(sce)
@@ -261,7 +263,6 @@ p <- (p1 | p2) + plot_annotation(
 
 
 
-
 ## Cell-level comparison
 
 ### Distribution of cell count 
@@ -339,7 +340,7 @@ dt <- unique(cellDt[,.(sample, prop, target, totalReads, cell_type)])
 dt <- na.omit(dt)
 dt_target <- dt[target == TRUE]
 
-# ---- NORMAL PLOT ----
+
 normal_dt <- dt_target[sample %in% c("sampleA_all.WTA", "sampleA.Twist")]
 normal_wide <- dcast(normal_dt, cell_type ~ sample, value.var = "prop")
 
@@ -357,7 +358,7 @@ p1 <- ggplot(normal_wide, aes(x = sampleA_all.WTA,
   ylim(c(0,1)) +
   coord_fixed()
 
-# ---- TUMOR PLOT ----
+
 tumor_dt <- dt_target[sample %in% c("sampleB_all.WTA", "sampleB.Twist")]
 tumor_wide <- dcast(tumor_dt, cell_type ~ sample, value.var = "prop")
 
@@ -380,5 +381,92 @@ p <- p1 + p2 + plot_layout(guides = "collect")
 
 ```
 
+## Transcript-level comparison
 
+### Data loading
+```{r}
+# gtf <- "/Volumes/jiayiwang/pacbio/data/genome/gencode.v47.chr_patch_hapl_scaff.annotation.sorted.gtf"
+# gr <- rtracklayer::import(gtf)
+# tx <- gr[mcols(gr)$type == "transcript"]
+# tx_df <- as.data.frame(mcols(tx))
+# tx_df <- tx_df[, intersect(c("transcript_id", "gene_id", "gene_name"), colnames(tx_df)), drop = FALSE]
+# tx_df <- tx_df[!is.na(tx_df$transcript_id) & !is.na(tx_df$gene_id), , drop = FALSE]
+# tx_df <- tx_df[!duplicated(tx_df$transcript_id), , drop = FALSE]
+# map_gene_id   <- setNames(tx_df$gene_id,   tx_df$transcript_id)
+# map_gene_name <- if ("gene_name" %in% names(tx_df)) setNames(tx_df$gene_name, tx_df$transcript_id) else NULL
+tx <- fread("data/transcriptome/target_transcripts.csv", header = FALSE)
+samples <- c("sampleB_twist_all",
+             "sampleA_twist_all",
+             "sampleA_all",
+             "sampleB_all"
+             )
+
+sce_dir <- "/Volumes/jiayiwang/loggedfs_david_penton/result/quantify/transcriptome/transcript_sce"
+sces <- lapply(samples, \(smp) {
+    sce <- readRDS(file.path(sce_dir, paste0(smp, ".rds")))
+})
+sce <- do.call(cbind, sces)
+rd <- DataFrame(tx = rownames(sce))
+rd$target <- ifelse(rd$tx %in% tx$V1, "On-Target", "Off-Target")
+rowData(sce) <- rd
+
+sce  <- sce[rowSums(counts(sce) != 0) > 0, ]
+```
+
+## Plot 
+
+```{r}
+dt <- rbindlist(lapply(samples, \(s) {
+    x <- sce[,sce$sample==s]
+    cnt <- counts(x)  
+    data.table(
+        transcript = rowData(x)$tx,
+        target   = rowData(x)$target,
+        count  = rowSums(cnt),
+        sample = x$sample[1]
+    )
+}))
+dt[, tech:=ifelse(grepl("twist", sample),"Twist", "WTA")]
+dt[, sample_id:=substr(sample, 1, 7)]
+
+dt_wide <- dcast(
+  dt, transcript + sample_id + target ~ tech, 
+  value.var = "count", 
+  fun.aggregate = sum  
+)
+
+#dt_wide <- na.omit(dt_wide)
+target_colors <- c("Off-Target" = "grey85", "On-Target" = "dodgerblue")
+p1 <- ggplot(dt_wide, aes(x = WTA, y = Twist, color = target)) +
+  geom_point_rast(size = 1.5, alpha=0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey50")  +
+  facet_wrap(~sample_id) +
+  scale_color_manual(values = target_colors) +
+  scale_x_continuous(trans = pseudo_log_trans(base = 10)) +
+  scale_y_continuous(trans = pseudo_log_trans(base = 10)) +
+  coord_equal() +
+  labs(
+    x = "LR-WTA",
+    y = "LR-Twist",
+    color = "Target"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90,
+                                   vjust = 0.5, hjust = 1,
+                                   size = 8),
+        axis.text.y = element_text(size = 8),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11),
+        legend.title = element_text(size = 11),
+        strip.text = element_text(size = 11),
+        legend.text  = element_text(size = 9),
+         panel.border = element_rect(
+            color = "black",
+            fill = NA,
+            linewidth = 0.6
+        ))
+
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts//enrichment_transcript.pdf",
+#         p1,  width=8, height=3.5)
+```
 

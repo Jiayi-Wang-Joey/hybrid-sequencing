@@ -1,6 +1,8 @@
 configfile: "config.yaml"
 count = expand(res_dir+"quantify/transcriptome/oarfish/{sample}.count.mtx", sample=SAMPLE_ALL)
 sce = expand(res_dir+"quantify/transcriptome/gene_sce/{sample}.rds", sample=SAMPLE_ALL)
+sce_raw = expand(res_dir+"quantify/transcriptome/transcript_sce/{sample}_raw.rds", sample=["sampleA_all", "sampleB_all"])
+
 rule sort_bams_by_barcode_transcriptome:
     input:
         res_dir + "align/transcriptome/add_BC_tags/{sample}.aligned.tagged.bam",
@@ -32,7 +34,7 @@ rule oarfish_quantify:
         "../envs/quantify.yaml"
     params:
         outdir = res_dir + "quantify/transcriptome/oarfish/{sample}",
-        thread=20
+        thread = 20
     shell:
         """
         oarfish --single-cell --model-coverage --filter-group no-filters --output {params.outdir} --alignments {input} --threads {params.thread} &> {log}
@@ -70,4 +72,22 @@ rule generate_sce:
         """
         {R} CMD BATCH --no-restore --no-save "--args wcs={wildcards}\
         mtx={input.mtx} fts={input.fts} bcd={input.bcd} tx={input.tx} tsce={output.tsce} gsce={output.gsce}" {input[0]} {log}
+        """
+
+rule generate_sce_raw:
+    input:
+        "workflow/scripts/generate_sce_raw.R",
+        tx="data/extract_transcript_gene_mapping/transcript_gene_mapping.tsv",
+        mtx=res_dir+"quantify/transcriptome/oarfish/{sample}.count.mtx",
+        fts=res_dir+"quantify/transcriptome/oarfish/{sample}.features.txt",
+        bcd=res_dir+"quantify/transcriptome/oarfish/{sample}.barcodes.txt"
+    output:
+        tsce=res_dir+"quantify/transcriptome/transcript_sce/{sample}_raw.rds",
+        #gsce=res_dir+"quantify/transcriptome/gene_sce/{sample}_raw.rds"
+    log:
+        "logs/quantify/transcriptome/generate_sce_raw/{sample}.out"
+    shell:
+        """
+        {R} CMD BATCH --no-restore --no-save "--args wcs={wildcards}\
+        mtx={input.mtx} fts={input.fts} bcd={input.bcd} tx={input.tx} tsce={output.tsce}" {input[0]} {log}
         """

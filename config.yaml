@@ -10,10 +10,12 @@ annotation: "/home/jiayiwang/pacbio/data/genome/gencode.v47.chr_patch_hapl_scaff
 transcriptome_bed: "/home/jiayiwang/pacbio/data/genome/gencode.v47.chr_patch_hapl_scaff.annotation.bed"
 cds_bed: "/home/jiayiwang/pacbio/data/genome/gencode.v47.chr_patch_hapl_scaff.cds.bed"
 whitelist: "data/barcode/3M-3pgex-may-2023.REVCOMP.txt"
+cr_transcriptome: "/home/jiayiwang/pacbio/data/genome/GRCh38p14_gencode_v47"
 
 # singualrity images
 clair3-rna: "/home/jiayiwang/tools/clair3-rna-latest.simg"
 deepvariant: "/home/jiayiwang/tools/deepvariant_1.9.0.sif"
+cellranger: "/home/jiayiwang/tools/cellranger-9.0.1/cellranger"
 
 # Threads for preprocessing
 lima_threads: 8

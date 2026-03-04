@@ -1,5 +1,6 @@
 configfile: "config.yaml"
 align_genome = expand(res_dir + "align/genome/removed_cell/{sample}.aligned.tagged.bam", sample=SAMPLE_ALL)
+
 ############### align to transcriptome #############
 rule extract_transcriptome:
     input:

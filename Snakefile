@@ -9,14 +9,14 @@ res_dir = config["res_dir"]
 SAMPLE = ["sampleA", "sampleB"]
 SAMPLE_LR = ["sampleA", "sampleB", "sampleA_twist", "sampleB_twist"]
 SAMPLE_ALL = ["sampleA_twist_all", "sampleB_twist_all", "sampleA_all", "sampleB_all"]
+
 #rules
 include: "workflow/rules/cellranger.smk"
 include: "workflow/rules/preprocess.smk"
 include: "workflow/rules/align.smk"
 include: "workflow/rules/quantify.smk"
-include: "workflow/rules/read_qc.smk"
 include: "workflow/rules/variants.smk"
-include: "workflow/rules/plots.smk"
+#include: "workflow/rules/downsample.smk"
 
 
 # results 
@@ -32,6 +32,7 @@ align = {
 ################## Quantification ################
 quantify = {
     "sce": sce
+    #"sce_raw": sce_raw
 }
 
 ################## Variant calling ##################
@@ -41,14 +42,11 @@ variants = {
     "clinvar": clinvar
 }
 
-
-
-############### plts ###################
-plts = [
-    "plts/F1/gene_coverage.pdf",
-    "plts/F1/read_distribution.pdf"
-]
-
+################ Revision ##############
+# downsample = {
+#     "downsample_fastq": downsample_fastq,
+#     "downsample_count": downsample_count
+# }
 
 ############## set up ##################
 rule all:
@@ -56,9 +54,8 @@ rule all:
         [x for x in preprocess.values()],
         [x for x in align.values()],
         [x for x in quantify.values()],
-        [x for x in read_qc.values()],
-        [x for x in variants.values()],
-        plts
+        [x for x in variants.values()]
+        #[x for x in downsample.values()],
 
 
 

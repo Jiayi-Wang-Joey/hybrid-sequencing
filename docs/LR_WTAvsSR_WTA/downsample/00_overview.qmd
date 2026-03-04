@@ -1,0 +1,362 @@
+---
+title: "Downsample SR-WTA raw reads for cell calling"
+format:
+  html:
+    self-contained: true
+    toc: true
+    code-fold: true
+    code-tools: true
+    toc_float: true
+    
+    
+author: Jiayi Wang
+---
+
+## Dependencies
+```{r}
+suppressPackageStartupMessages({
+    library(DropletUtils)
+    library(ggplot2)
+    library(Biostrings)
+    library(DropletUtils)
+    library(data.table)
+    library(ggrastr)
+    library(patchwork)
+})
+```
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/Volumes/jiayiwang/twist-comparison/")
+```
+
+## With default cell calling methods
+
+### Isoseq called barcodes
+```{r}
+samples <- c("sampleA", "sampleB")
+path <- "/Volumes/jiayiwang/loggedfs_david_penton/result/quantify/transcriptome/gene_sce/"
+lrs <- lapply(samples, \(s) {
+    x <- readRDS(paste0(path, s, ".rds"))
+    x$sample <- s
+    x$barcode <- colnames(x)
+    x
+    })
+
+.pre <- \(sces) {
+    sce <- do.call(cbind, sces)
+    sce <- sce[rowSums(counts(sce)) > 0,]
+    sce <- sce[,colSums(counts(sce)) > 0]
+    colnames(sce) <- paste0(sce$barcode, ".", sce$sample)
+    sce
+}
+
+lr <- .pre(lrs)
+isoseq_barcodes <- colnames(lr)
+rm(lrs)
+rm(lr)
+```
+
+### Raw counts
+
+```{r}
+samples <- c("sampleA", "sampleB")
+path <- "/Volumes/jiayiwang/loggedfs_david_penton/result/quantify/transcriptome/transcript_sce/"
+lrs <- lapply(samples, \(s) {
+    x <- readRDS(paste0(path, s, "_all_raw.rds"))
+    x$sample <- s
+    x$barcode <- colnames(x)
+    colnames(x) <- paste0(x$barcode, ".", x$sample)
+    x
+    })
+names(lrs) <- samples
+br1 <- as.data.table(barcodeRanks(lrs$sampleA), keep.rownames = "barcode")
+br2 <- as.data.table(barcodeRanks(lrs$sampleB), keep.rownames = "barcode")
+br1[,knee:=metadata(barcodeRanks(lrs$sampleA))$knee]
+br2[,knee:=metadata(barcodeRanks(lrs$sampleB))$knee]
+br1[,sample:="sampleA"]
+br2[,sample:="sampleB"]
+lbr <- rbind(br1,br2)
+lbr[,called:=barcode %in% isoseq_barcodes]
+```
+
+### CellRanger barcodes
+```{r}
+seeds <- c(42, 2026, 2, 7025, 226)
+path <- "/Volumes/jiayiwang/twist-comparison/results/cellranger/"
+cellranger_barcodes <- lapply(seeds, \(seed) {
+    srs <- lapply(samples, \(s) {
+    x <- read10xCounts(paste0(path, s, "_", seed, "/outs/filtered_feature_bc_matrix"))
+    x$sample <- s
+    x$barcode <- as.character(
+        reverseComplement(DNAStringSet(sub("-1$", "", x$Barcode))))
+    x })
+    #sr <- .pre(srs)
+    sr <- cbind(srs[[1]], srs[[2]])
+    paste0(sr$barcode, ".", sr$sample)
+})
+names(cellranger_barcodes) <- seeds
+
+```
+
+### Raw counts
+```{r}
+path <- "/Volumes/jiayiwang/twist-comparison/results/cellranger/"
+srs <- lapply(seeds, \(seed) {
+    srs <- lapply(samples, \(s) {
+    x <- read10xCounts(paste0(path, s, "_", seed, "/outs/raw_feature_bc_matrix"))
+    x$sample <- s
+    x$barcode <- as.character(
+        reverseComplement(DNAStringSet(sub("-1$", "", x$Barcode))))
+    x })
+    
+    sr <- cbind(srs[[1]], srs[[2]])
+    colnames(sr) <- paste0(sr$barcode, ".", sr$sample)
+    sr
+})
+names(srs) <- seeds
+sbr <- lapply(seq_along(seeds), \(i) {
+    sr <- srs[[i]]
+    barcodes <- cellranger_barcodes[[i]]
+    br1 <- as.data.table(barcodeRanks(sr[,sr$sample=="sampleA"]), 
+                         keep.rownames = "barcode")
+    br2 <- as.data.table(barcodeRanks(sr[,sr$sample=="sampleB"]), 
+                         keep.rownames = "barcode")
+    br1[,knee:=metadata(barcodeRanks(sr[,sr$sample=="sampleA"]))$knee]
+    br2[,knee:=metadata(barcodeRanks(sr[,sr$sample=="sampleB"]))$knee]
+    br1$sample <- "sampleA"
+    br2$sample <- "sampleB"
+    br <- rbind(br1,br2)
+    br[,called := barcode %in% barcodes]
+    br[,seed:=paste0("Seed ", i)]
+    br
+}) |> rbindlist()
+
+lbr$seed <- "LR-WTA"
+```
+
+### Cell barcode rank plots
+```{r}
+br <- rbind(lbr, sbr)
+br[,called:=factor(called, levels=c(TRUE, FALSE))]
+knee_dt <- unique(br[, .(sample, seed, knee)])
+gg <- ggplot(br, aes(rank, total, color=called)) +
+    geom_point_rast(size=1, alpha=0.8) +
+    facet_grid(sample~seed) + 
+    scale_y_log10() +
+    scale_x_log10() + 
+    theme_classic() +
+    labs(color = "Called", x = "Barcodes", y = "UMI counts") +
+    scale_color_manual(
+        values = c("TRUE" = "purple", "FALSE" = "grey80")
+    ) +
+    guides(color = guide_legend(
+        override.aes = list(size = 3)  
+    )) +
+    theme(
+        panel.grid.major = element_line(color = "grey85", linewidth = 0.3),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+        strip.background = element_rect(fill = "white", color = "black", linewidth = 0.8),
+        strip.text = element_text(size = 11),
+        axis.line = element_line(color = "black", linewidth = 0.3),
+        panel.spacing = unit(0, "lines"),
+        panel.spacing.x = unit(0, "lines"),
+        panel.spacing.y = unit(0, "lines"),
+        axis.text.y = element_text(size = 7),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11),
+        legend.title = element_text(size = 11)
+    )
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/downsample_cellRank_raw.pdf", gg,
+#        width = 30, height = 11, units = "cm")    
+```
+
+
+### Cell barcode overlap
+```{r}
+# venns <- lapply(srs, \(sr) {
+#     dt1 <- colData(lr)[,c("sample","barcode")]
+#     dt2 <- colData(sr)[,c("sample","barcode")]
+#     dt1$tech <- "LR-WTA"
+#     dt2$tech <- "SR-WTA"
+#     cellDt <- as.data.table(rbind(dt1, dt2))
+#     .plotVenn <- \(samples, title, cols) {
+#         cd <- cellDt[sample == samples]
+#         ls <- split(cd$barcode, cd$tech)
+#         ggvenn::ggvenn(ls, fill_color = cols) 
+#     }
+#     p1 <- .plotVenn("sampleA", "sampleA", 
+#                     c("#A6CEE3", "#B2DF8A"))
+#     p2 <- .plotVenn("sampleB", "sampleB",
+#                      c("#B2DF8A", "#FDBF6F"))
+#     p1 / p2
+# })
+# venn <- venns |> wrap_plots(nrow = 1)
+# ggsave("/Volumes/jiayiwang/twist-comparison/plts/downsample_venns.pdf", 
+#        venn, height = 10, width=45, units = "cm")
+```
+
+## emptyDrops cell calling
+
+```{r}
+set.seed(42)
+br$called_ed <- NA
+lrEDs <- lapply(lrs, \(lr) {
+    ed <- emptyDropsCellRanger(counts(lr))
+    bc <- ed$FDR < 0.001
+    call <- rownames(ed)[which(bc)]
+    br[sample==lr$sample[1] & seed == "LR-WTA", 
+       called_ed:=barcode %in% call]
+    br 
+})
+
+srEDs <- lapply(seq_along(seeds), \(i) {
+    sr <- srs[[i]]
+    ed1 <- emptyDropsCellRanger(counts(sr[,sr$sample=="sampleA"]))
+    ed2 <- emptyDropsCellRanger(counts(sr[,sr$sample=="sampleB"]))
+    call1 <- rownames(ed1)[which(ed1$FDR < 0.001)]
+    call2 <- rownames(ed2)[which(ed2$FDR < 0.001)]
+    br[sample=="sampleA" & seed == paste0("Seed ", i), 
+       called_ed:=barcode %in% call1]
+    br[sample=="sampleB" & seed == paste0("Seed ", i), 
+       called_ed:=barcode %in% call2]
+    br
+})
+rm(srEDs)
+rm(lrEDs)
+
+
+```
+
+
+```{r}
+gg <- ggplot(br, aes(rank, total, color=called_ed)) +
+    geom_point_rast(size=1, alpha=0.8) +
+    facet_grid(sample~seed) + 
+    scale_y_log10() +
+    scale_x_log10() + 
+    theme_classic() +
+    labs(color = "Called", x = "Barcodes", y = "UMI counts") +
+    scale_color_manual(
+        values = c("TRUE" = "purple", "FALSE" = "grey80")
+    ) +
+    guides(color = guide_legend(
+        override.aes = list(size = 3)  
+    )) +
+    theme(
+        panel.grid.major = element_line(color = "grey85", linewidth = 0.3),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+        strip.background = element_rect(fill = "white", color = "black", linewidth = 0.8),
+        strip.text = element_text(size = 11),
+        axis.line = element_line(color = "black", linewidth = 0.3),
+        panel.spacing = unit(0, "lines"),
+        panel.spacing.x = unit(0, "lines"),
+        panel.spacing.y = unit(0, "lines"),
+        axis.text.y = element_text(size = 7),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11),
+        legend.title = element_text(size = 11))
+ggsave("/Volumes/jiayiwang/twist-comparison/plts/downsample_cellRank_ed.pdf", gg,
+       width = 30, height = 11, units = "cm")
+```
+
+### Figure 1i
+```{r}
+dt <- br[seed=="LR-WTA" | seed == "Seed 1"]
+tt <- dt[sample=="sampleA"]
+dt_long <- reshape2::melt(
+    tt,
+    id.vars = c("barcode","rank","total","knee","sample","seed"),
+    measure.vars = c("called","called_ed"),
+    variable.name = "method",
+    value.name = "Called"
+)
+setDT(dt_long)
+dt_long[, method := factor(method,
+                           levels = c("called","called_ed"),
+                           labels = c("Default","EmptyDrops"))]
+dt_long[seed=="Seed 1", seed:="Downsampled SR-WTA"]
+dt_long[,seed:=factor(seed, levels = c("LR-WTA", "Downsampled SR-WTA"))]
+gg <- ggplot(dt_long, aes(rank, total, color=Called)) +
+    geom_point_rast(size=1, alpha=0.8) +
+    facet_grid(method~seed) + 
+    scale_y_log10() +
+    scale_x_log10() + 
+    theme_classic() +
+    labs(color = "Called", x = "Barcodes", y = "UMI counts") +
+    scale_color_manual(
+        values = c("TRUE" = "purple", "FALSE" = "grey80")
+    ) +
+    guides(color = guide_legend(
+        override.aes = list(size = 3)  
+    )) +
+    theme(
+        panel.grid.major = element_line(color = "grey85", linewidth = 0.3),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+        strip.background = element_rect(fill = "white", color = "black", linewidth = 0.8),
+        strip.text = element_text(size = 11),
+        axis.line = element_line(color = "black", linewidth = 0.3),
+        panel.spacing = unit(0, "lines"),
+        panel.spacing.x = unit(0, "lines"),
+        panel.spacing.y = unit(0, "lines"),
+        axis.text.y = element_text(size = 7),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11),
+        legend.title = element_text(size = 11))
+ggsave("/Volumes/jiayiwang/twist-comparison/plts/downsample_cellRank_small.pdf", gg,
+       width = 14, height = 11, units = "cm")
+```
+
+
+### Venn plots
+```{r}
+dt <- br[called_ed==TRUE,]
+
+venns <- lapply(seq_along(seeds), \(i) {
+    dt1 <- dt[seed=="LR-WTA", c("sample","barcode")]
+    dt2 <- dt[seed==paste0("Seed ", i),c("sample","barcode")]
+    dt1$tech <- "LR-WTA"
+    dt2$tech <- "SR-WTA"
+    cellDt <- as.data.table(rbind(dt1, dt2))
+    .plotVenn <- \(samples, title, cols) {
+        cd <- cellDt[sample == samples]
+        ls <- split(cd$barcode, cd$tech)
+        ggvenn::ggvenn(ls, fill_color = cols)
+    }
+    p1 <- .plotVenn("sampleA", "sampleA",
+                    c("#A6CEE3", "#B2DF8A"))
+    p2 <- .plotVenn("sampleB", "sampleB",
+                     c("#B2DF8A", "#FDBF6F"))
+    p1 / p2
+}) |> wrap_plots(nrow = 1)
+# venn <- venns |> wrap_plots(nrow = 1)
+ggsave("/Volumes/jiayiwang/twist-comparison/plts/downsample_venns_ed.pdf",
+       venns, height = 10, width=45, units = "cm")
+
+```
+
+## Saving
+
+### LR-WTA
+```{r}
+bcs <- dt[seed=="LR-WTA"]$barcode
+lr <- cbind(lrs$sampleA, lrs$sampleB)
+lr <- lr[,bcs]
+```
+
+### Downsampled SR-WTA
+```{r}
+for (i in seq_along(seeds)) {
+    sr <- srs[[i]]
+    seed <- seeds[[i]]
+    bcs <- dt[seed==paste0("Seed ", i)]$barcode
+    sr <- sr[,bcs]
+    saveRDS(sr, paste0("/Volumes/jiayiwang/twist-comparison/data/counts/sr_", 
+            seed, "_ed.rds"))
+}
+```
+
+
+
